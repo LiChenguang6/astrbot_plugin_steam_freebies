@@ -1,6 +1,6 @@
 # Steam 喜加一监控 · AstrBot 插件
 
-> **v0.3.4（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
+> **v0.4.0（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
 
 独立插件，适用于 AstrBot ≥ 4.29.1 / Python ≥ 3.12；支持 AstrBot 的 OneBot（如 NapCat）与 QQ 官方适配器。借鉴 [原项目](https://github.com/LiChenguang6/astrbot_plugin_steam_status_monitor) 的插件面板架构，**不影响该项目**。
 
@@ -41,7 +41,7 @@
 
 校验元数据优先取 ASF 官方 GitHub Release API；如果 GitHub API 不可达，插件内置 ASF **6.3.10.6** 官方发布的各平台 SHA256 和精确版本下载路径作为备用。内置固定版本不会自动更新，恢复官方 API 后将恢复检查最新版。两者都不可验证时则拒绝安装。安装后的 ASF 本体和账号数据位于 AstrBot 私有数据目录，**不会上传到 GitHub，也无需把大型二进制提交到你的源码仓库**。
 
-**注意：** 一键安装 ≠ Steam 账号自动登录。ASF 首次授权仍需你通过本地 ASF-ui/Steam Guard 完成。AstrBot 在 Docker 里时，下载和 ASF 均运行在容器内，IPC 只能从同一容器访问；需保证持久化数据卷。服务器完全无法访问任何镜像或 GitHub 时，网络限制仍然存在，插件无法保证成功下载。
+**注意：** 一键安装 ≠ Steam 账号自动登录。ASF 首次授权仍需账号持有人提供必要验证；v0.4.0 可以通过插件内的 ASF 账号管理提交一次性验证信息。AstrBot 在 Docker 里时，下载和 ASF 均运行在容器内，IPC 只能从同一容器访问；需保证持久化数据卷。服务器完全无法访问任何镜像或 GitHub 时，网络限制仍然存在，插件无法保证成功下载。
 
 ## 插件内置管理 ASF（可选）
 
@@ -49,8 +49,8 @@
 
 1. 打开 WebUI → **内置 ASF** → 选择下载模式（默认自动加速）→ 点击 **安装 / 更新 ASF**。安装器自动选择官方 Release 或经过 SHA256 校验的加速中转，网络不通可使用固定版本的官方校验清单。
 2. 安装完成后点击 **启动 ASF**。运行中不能覆盖安装包；错误与 ASF 本地日志位于 `data/plugin_data/astrbot_plugin_steam_freebies/asf-manager/` 下（实际位置以 AstrBot 数据目录为准）。
-3. 可以在面板中填写 **ASF Bot 名称** 和 **Steam 登录名**，点击 **创建本地 Bot 配置**。该配置默认关闭自动挂卡（`FarmingPreferences: 1`），不含密码且默认 `Enabled: false`；再使用 ASF-ui 完成密码/Steam Guard 和启用。此操作不会覆盖已有 Bot 配置。
-4. ASF 默认 IPC 地址为 `http://127.0.0.1:1242`，首次托管安装生成随机 IPC 密码，只保存在插件私有数据目录的 `runtime/config/ASF.json` 内。**ASF 账号密码及 Steam Guard 请使用 ASF 自身的受信配置功能**，本插件面板不要求 Steam 密码。
+3. 可以在面板中填写 **ASF Bot 名称** 和 **Steam 登录名**，点击 **创建本地 Bot 配置**。该配置默认关闭自动挂卡（`FarmingPreferences: 1`），不含密码且默认 `Enabled: false`；可以在内置 ASF 账号管理区启用 Bot，并按 ASF 提示完成登录/Steam Guard。此操作不会覆盖已有 Bot 配置。
+4. ASF 默认 IPC 地址为 `http://127.0.0.1:1242`，首次托管安装生成随机 IPC 密码，只保存在插件私有数据目录的 `runtime/config/ASF.json` 内。**内置账号管理可选择性提交一次性密码/Steam Guard 给本机 ASF**；插件本身不持久化这些验证信息。
 5. 在 ASF 内创建、登录并启用 Bot（Steam 账号实例）。在本插件管理面板设置 **ASF Bot 名称** 与连接模式 **插件托管 ASF**；可选勾选随 AstrBot 启动。
 6. 访问远程服务器上的 ASF-ui 时，**不要直接将 ASF 的 IPC 端口对公网开放**。用 SSH 安全转发到本机的 `127.0.0.1:1242` 再访问；如果只是本地 AstrBot，可直接打开 ASF-ui。IPC 密码可在服务器的私有配置中查看，切勿发送到 QQ 群或 GitHub。
 7. 在 Steam 商店或可信来源确认有效的永久免费包 **SubID**，在活动卡片「批准免费包 SubID」，再手动测试 ASF 领取。可选开启「已批准免费 SubID 自动领取」。
@@ -106,7 +106,7 @@ node tests/asf_button_smoke.js
 1. Steam 100% 折扣不一定是“永久免费入库”；第三方 Key 可能过期、需积分、已缺货，也不保证全量发现。
 2. 当前只针对管理员批准的 SubID 调用 ASF，**不会自动识别并批准所有永久限免包**。
 3. QQ 主动推送受对应适配器的权限、额度、平台风控约束；历史通知保留但不保证跨进程恰好一次发送。
-4. 托管 ASF 进程不会直接在面板接受 Steam 登录密码，配置登录仍需要 ASF-ui、账号持有人授权与 Steam Guard；云服务器需安全访问 IPC。
+4. 内置管理面板支持向本机 ASF 发送一次性登录信息，但需要账号本人授权并完成 Steam Guard；通过 HTTP 访问时请注意凭据的传输风险。
 5. 对 HTTP/IP C 返回文本进行有限分类，并非正式 Steam 许可证验证接口，可能有未识别的错误文本。
 
 ASF 官方资料：[项目](https://github.com/JustArchiNET/ArchiSteamFarm) · [IPC](https://github.com/JustArchiNET/ArchiSteamFarm/wiki/IPC) · [配置](https://github.com/JustArchiNET/ArchiSteamFarm/wiki/Configuration)。
@@ -137,7 +137,7 @@ ASF 官方资料：[项目](https://github.com/JustArchiNET/ArchiSteamFarm) · [
 - 不要随意把 ASF IPC 端口映射到公网；账号授权仍在 ASF 管理端完成。
 - 更新插件无需重新安装 ASF，已有的 ASF 二进制、Bot 配置和数据库位于 AstrBot 私有数据目录，不随代码更新被覆盖。
 
-## v0.3.3：群晖 NAS 4GB 内存，ASF 一键切换高性能 / 低资源兼容
+## v0.4.0：群晖 NAS 4GB 内存，ASF 一键切换高性能 / 低资源兼容
 
 在插件 WebUI → **托管 ASF → ASF 运行模式**，有两个单选按钮：
 
@@ -156,16 +156,20 @@ ASF 官方资料：[项目](https://github.com/JustArchiNET/ArchiSteamFarm) · [
 
 资料： [.NET Globalization Invariant Mode](https://learn.microsoft.com/en-us/dotnet/core/runtime-config/globalization) · [ASF OptimizationMode](https://github.com/JustArchiNET/ArchiSteamFarm/wiki/Configuration#optimizationmode)
 
-## 群晖 Docker：为什么 ASF 本机管理界面点不开？（v0.3.4）
 
-**`127.0.0.1` 永远指发起连接的那台机器。** 当电脑浏览器打开 `http://127.0.0.1:1242`，连接的是电脑；ASF 却在群晖 AstrBot Docker 容器里。即使 ASF 处于运行状态，也不会自动转发过去。v0.3.4 将面板中的误导性链接替换为群晖专用说明，而非自动暴露管理端口。
+## v0.4.0：AstrBot 面板内置 ASF 账号管理（无需 Firefox / NAS 1242 映射）
 
-安全访问 ASF-ui 需要遵循官方 [ASF IPC](https://github.com/JustArchiNET/ArchiSteamFarm/wiki/IPC) 与 [ASF Docker](https://github.com/JustArchiNET/ArchiSteamFarm/wiki/Docker) 文档：
+打开 AstrBot `http://NAS-IP:6185` → Steam 喜加一插件 → 控制台 → 托管 ASF。选择「插件托管 ASF」，保持本地 ASF 进程正常运行，在新的**内置 ASF 账号管理**区域直接查看当前 Bot 的登录状态、启用/停用 Bot、启动/停止 Bot，以及提交 ASF 需要的密码或 Steam Guard 一次性验证码。
 
-1. 确认 ASF 已运行且已有随机 `IPCPassword`，不要修改为无密码。
-2. 仅在确认容器端口将映射到宿主机 `127.0.0.1` 后，才在 ASF 的 `runtime/config/IPC.config` 中配置 `{"Kestrel":{"Endpoints":{"HTTP":{"Url":"http://*:1242"}}}}`，让 Docker 可以转发 ASF 的 IPC。
-3. 在群晖 Container Manager 使用现有 AstrBot Compose 配置追加端口 `127.0.0.1:1242:1242`；**不能通过 NAS GUI 限制监听地址时不要使用面向所有网卡的 `1242:1242`**。重建容器前确保数据卷持久化。
-4. 在电脑终端运行 `ssh -N -L 1242:127.0.0.1:1242 NAS_USER@NAS_IP`，NAS_USER 和 NAS_IP 改成群晖 SSH 用户及局域网 IP。保持 SSH 打开，在电脑浏览器访问 `http://127.0.0.1:1242/`。
-5. ASF-ui 登录需要的 IPC 密码在 NAS 私有的 `runtime/config/ASF.json`（`IPCPassword`），随后使用 ASF-ui 配置 Steam 帐号与 Steam Guard，并启用 Bot。**不要将密码或 Steam Guard 信息发送给 QQ、GitHub 或聊天助手。**
+操作顺序：
 
-当前插件已经能创建不含密码的 Bot 配置并使用 ASF IPC 领取已批准的免费 SubID，但它**没有**提供与 ASF-ui 等价的安全浏览器代理。仅仅创建 Bot 配置并填写 Steam 登录名，不等于完成 Steam 身份验证。为了防止账号被接管，本插件不会擅自对公网打开 1242 端口。
+1. **创建 Bot 配置**：填 Bot 名称、Steam 登录名，点击「创建本地 Bot 配置」。新配置不包含密码且初始禁用。
+2. **启用**：选择「插件托管 ASF」，保存设置，启动 ASF，然后在新的内置区域点击「启用 Bot」。
+3. **登录**：点击「启动 Bot」，按 ASF 提示选择「Steam 登录密码」或「Steam Guard 邮件验证码」等输入类型，提交给 ASF。若 ASF 表示需重新启动 Bot，则再次点击「启动 Bot」。部分设备确认需要在你本人的 Steam App 内操作。
+4. **核验**：点击「刷新账号状态」。只有 ASF 返回 `IsConnectedAndLoggedOn` 时才显示「已连接 Steam」。
+
+该页面**不是完整的上游 ASF-ui 源码嵌入**，而是在 AstrBot 插件 UI 里直接集成账号连接所需的常用能力，采用有限范围的 `/Api/Bot` IPC 请求，**不提供任意 URI 或命令代理**，不将原始 Bot 配置、Steam 密码、登录密钥、验证码和 IPC 密码回传到浏览器、QQ 群或日志。所有 IPC 请求仅发往插件所在容器的 `127.0.0.1:1242`。
+
+**传输安全**：请尽可能使用 HTTPS 访问 AstrBot。仅通过普通 HTTP 远程打开 `:6185` 时，输入的 Steam 密码或验证码没有 TLS 传输保护。界面因此要求先明确确认当前环境仅为可信网络。不要将 AstrBot 管理后台直接公开到互联网；不要将敏感输入截图或粘贴到聊天中。
+
+首次 Steam 登录及 Guard 确认仍需本人授权，不支持绕过 Steam 安全验证。离线测试无法代替真实 Docker + Steam 联调。

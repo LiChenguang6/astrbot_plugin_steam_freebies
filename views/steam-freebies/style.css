@@ -19,3 +19,10 @@
 .profile-option strong{display:block;font-size:15px;margin-bottom:6px}
 .profile-option small{display:block;color:var(--muted);line-height:1.6}
 @media(max-width:720px){.profile-grid{grid-template-columns:1fr}}
+
+/* ASF native management controls live inside the AstrBot plugin view iframe. */
+.asf-native-ui{margin-top:22px;border:1px solid var(--line);background:rgba(12,22,38,.42);border-radius:13px;padding:18px;min-width:0}
+.asf-native-ui .section-title{margin-bottom:10px}
+.asf-native-ui .asf-controls{margin:14px 0;display:flex;flex-wrap:wrap;gap:10px}
+.asf-native-ui .field input[type=password]{width:100%;min-width:0}
+@media(max-width:700px){.asf-native-ui{padding:12px}}

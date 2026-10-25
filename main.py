@@ -11,6 +11,7 @@ from astrbot.api.web import error_response, json_response, request
 
 from .steam_freebies.asf import claim_sub
 from .steam_freebies.manager import ManagedASF
+from .steam_freebies.embedded_ui import EmbeddedUI
 from .steam_freebies.sources import fetch_candidates
 from .steam_freebies.store import Store
 
@@ -25,6 +26,7 @@ class Main(Star):
         data_dir = StarTools.get_data_dir(PLUGIN)
         self.store = Store(data_dir / "freebies.sqlite3")
         self.asf_manager = ManagedASF(data_dir / 'asf-manager')
+        self.asf_ui = EmbeddedUI(self.asf_manager)
         self.scan_lock = asyncio.Lock()
         self.claim_lock = asyncio.Lock()
         self.claim_notifications_lock = asyncio.Lock()
@@ -46,6 +48,10 @@ class Main(Star):
             ("POST", "asf/stop"): self.web_asf_stop,
             ("POST", "asf/settings"): self.web_asf_settings,
             ("POST", "asf/bot"): self.web_asf_bot,
+            ("GET", "asf/ui/status"): self.web_asf_ui_status,
+            ("POST", "asf/ui/enable"): self.web_asf_ui_enable,
+            ("POST", "asf/ui/control"): self.web_asf_ui_control,
+            ("POST", "asf/ui/input"): self.web_asf_ui_input,
         }
         for (method, path), handler in api.items():
             async def guarded(handler=handler):
@@ -256,6 +262,22 @@ class Main(Star):
     async def web_asf_bot(self):
         body=await request.json(default={})
         return json_response(self.asf_manager.prepare_bot(body.get('bot_name'),body.get('steam_login')))
+
+    async def web_asf_ui_status(self):
+        return json_response(await self.asf_ui.status())
+
+    async def web_asf_ui_enable(self):
+        body = await request.json(default={})
+        return json_response(await self.asf_ui.set_enabled(body.get('enabled')))
+
+    async def web_asf_ui_control(self):
+        body = await request.json(default={})
+        return json_response(await self.asf_ui.control(body.get('action')))
+
+    async def web_asf_ui_input(self):
+        body = await request.json(default={})
+        # Never log or return body.value (Steam password or one-time code).
+        return json_response(await self.asf_ui.input_secret(body.get('type'), body.get('value')))
 
     async def web_test(self):
         body = await request.json(default={})

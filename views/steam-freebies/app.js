@@ -263,3 +263,63 @@ function syncAsfProgress(){
   if(active && asfPoll===null)asfPoll=setInterval(reload,2500);
   if(!active && asfPoll!==null){clearInterval(asfPoll);asfPoll=null;}
 }
+
+
+// Embedded ASF control panel: all authentication goes through the AstrBot View bridge
+// to a narrow, authenticated localhost IPC client. No direct browser access to :1242.
+async function refreshEmbeddedASF() {
+  const node=$('asf-ui-status');
+  try {
+    const status=await bridge.apiGet('asf/ui/status');
+    const connected=status.connected?'已连接 Steam':'尚未确认登录 Steam';
+    const enabled=status.enabled?'已启用':'未启用';
+    node.textContent=status.message ||
+      `Bot：${status.bot_name||'未配置'} · ${status.configured?'配置已创建':'未创建配置'} · ${enabled} · ${status.running?'ASF 运行中':'ASF 未运行'} · ${connected}` +
+      (status.required_input?` · ASF 要求输入：${status.required_input}`:'') +
+      (status.status_note?` · ${status.status_note}`:'');
+    $('asf-ui-enable').textContent=status.enabled?'禁用 Bot':'启用 Bot';
+    $('asf-ui-enable').dataset.next=status.enabled?'false':'true';
+    for(const id of ['asf-ui-enable','asf-ui-bot-start','asf-ui-bot-stop'])
+      $(id).disabled=!status.running||!status.configured;
+    if(status.required_input && [...$('asf-ui-type').options].some(o=>o.value===status.required_input))
+      $('asf-ui-type').value=status.required_input;
+    return status;
+  }catch(error){
+    node.textContent='无法获取 ASF 状态：'+(error?.message||String(error));
+    return null;
+  }
+}
+async function embeddedAction(endpoint, body){
+  try{
+    const response=await bridge.apiPost(endpoint,body);
+    $('asf-ui-status').textContent=response.notice||'请求已执行';
+    await refreshEmbeddedASF();
+    return response;
+  }catch(err){
+    $('asf-ui-status').textContent='操作失败：'+(err?.message||String(err));
+    return null;
+  }
+}
+$('asf-ui-refresh').addEventListener('click',refreshEmbeddedASF);
+$('asf-ui-enable').addEventListener('click',async()=>{
+  const enabled=$('asf-ui-enable').dataset.next==='true';
+  const accepted=await askUser(enabled?'启用本地 ASF Bot 后它将允许连接 Steam。':'停用当前 ASF Bot？',
+    {title:'确认 Bot 操作',confirmText:enabled?'启用':'停用'});
+  if(accepted)await embeddedAction('asf/ui/enable',{enabled});
+});
+$('asf-ui-bot-start').addEventListener('click',()=>embeddedAction('asf/ui/control',{action:'Start'}));
+$('asf-ui-bot-stop').addEventListener('click',()=>embeddedAction('asf/ui/control',{action:'Stop'}));
+$('asf-ui-send').addEventListener('click',async()=>{
+  const kind=$('asf-ui-type').value;
+  const input=$('asf-ui-secret');
+  const value=input.value;
+  if(!$('asf-ui-trust').checked){
+    $('asf-ui-status').textContent='请先确认访问 AstrBot 的网络安全。优先使用 HTTPS。';return;
+  }
+  if(!value || value.length>128){$('asf-ui-status').textContent='请填写有效验证信息（最长 128 字符）。';return;}
+  input.value='';
+  // The secret is only sent in this direct bridge request; it is never written to page history.
+  await embeddedAction('asf/ui/input',{type:kind,value});
+});
+// Refresh once after AstrBot has injected its View bridge and session credentials.
+if(bridge)bridge.ready().then(refreshEmbeddedASF).catch(()=>{});
