@@ -62,6 +62,8 @@ class Main(Star):
             ("GET", "bili/login/prepare"): self.web_bili_login_prepare,
             ("POST", "bili/login/poll"): self.web_bili_login_poll,
             ("POST", "bili/logout"): self.web_bili_logout,
+            ("POST", "bili/session/import"): self.web_bili_session_import,
+            ("POST", "bili/session/check"): self.web_bili_session_check,
             ("POST", "bili/sms/captcha"): self.web_bili_sms_captcha,
             ("POST", "bili/sms/send"): self.web_bili_sms_send,
             ("POST", "bili/sms/login"): self.web_bili_sms_login,
@@ -352,6 +354,13 @@ class Main(Star):
 
     async def web_bili_login_poll(self):
         return json_response(await self.bili_auth.qr_poll())
+
+    async def web_bili_session_import(self):
+        body = await request.json(default={})
+        return json_response(await self.bili_auth.import_session(body.get('cookie')))
+
+    async def web_bili_session_check(self):
+        return json_response(await self.bili_auth.verify_session())
 
     async def web_bili_logout(self):
         return json_response(self.bili_auth.logout())

@@ -1,6 +1,6 @@
 # Steam 喜加一监控 · AstrBot 插件
 
-> **v0.6.5（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
+> **v0.6.6（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
 
 独立插件，适用于 AstrBot ≥ 4.29.1 / Python ≥ 3.12；支持 AstrBot 的 OneBot（如 NapCat）与 QQ 官方适配器。借鉴 [原项目](https://github.com/LiChenguang6/astrbot_plugin_steam_status_monitor) 的插件面板架构，**不影响该项目**。
 
@@ -315,3 +315,13 @@ B站二维码申请通过后台异步任务完成：点击“生成登录二维�
 - NAS 上申请网页登录会话，B站 App 可能提示陌生设备、地区/IP 或登录风险。**这属于 B站账号风控，不能保证通过修改二维码消除。遇到风险提示应取消授权，优先使用 B站官方页面完成任何必要安全核验。**
 - 不依赖 B站账号登录也可以尝试公开投稿搜索与手动 UP 主 UID 订阅，受 B站公开接口限流、WBI 与网络可用性影响。
 - 若需要定位仍存在的风险，请只提供提示文字和 HTTP 状态码，不要提供二维码、`qrcode_key`、Cookie、手机号或验证码。
+
+
+## v0.6.6：内置 B站账号会话管理（解决扫码/短信受阻）
+
+B站线索中心新增 **「已有网页登录会话」**，与原有扫码/短信登录并列，默认选中。用户可在自己的浏览器中通过 B站官网正常登录后，使用登录后的 `SESSDATA` 或 `SESSDATA=...; bili_jct=...; DedeUserID=...` Cookie 字符串导入。不要将凭据提供给聊天机器人、QQ 群或其他人；不要从未知网站获取所谓“B站 API Token”。
+
+- 后端只接受 B站网页会话相关白名单 Cookie；通过固定的 `https://api.bilibili.com/x/web-interface/nav` 账号状态接口验证 `isLogin=true`，再写入原插件私有目录 `bili-session.json`（Linux 权限 `0600`）。旧会话不会因失败导入而覆盖；WebUI 状态接口和响应从不返回敏感 Cookie。
+- 内置管理区提供 **导入并验证、检查当前登录、清除本地会话**；无需把整个 B站网页嵌入 iframe，也不打开额外浏览器窗口。Web 登录 Cookie 不是正式开发者 OAuth Token，具有账号访问权限，必须像密码一样保护。优先使用 HTTPS 管理后台，且仅导入本人账号。
+- 这不是绕过 B站安全机制：**B站可以拒绝 NAS IP / 会话请求**，而且登录有效也不意味着搜索 API 不受 412 等风控限制。NAS 到 `api.bilibili.com` 不通时也无法完成在线验证。
+- 如 Cookie 已泄露，应从 B站官方安全设置撤销对应会话。公开 GitHub 仓库不包含私人 Cookie、Steam 密码和 ASF 私有数据。

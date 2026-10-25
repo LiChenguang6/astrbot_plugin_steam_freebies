@@ -224,6 +224,7 @@ function showBili(){
   $('bili-login-status').textContent=login.status||'未登录';
   $('bili-login-status').className='pill '+(login.configured?'ok':'neutral');
   $('bili-login-logout').disabled=!login.configured;
+  $('bili-manual-check').disabled=!login.configured;
   $('ai-provider').value=ai.provider||'openai';
   if(document.activeElement!==$('ai-model'))$('ai-model').value=ai.model||'gpt-4o-mini';
   $('bili-status').textContent=`已订阅 ${creators.length} 位 UP 主 · ${data.settings.bili_enabled?'B站监控已开启':'B站监控已关闭'} · ${data.settings.bili_ai_enabled?'AI 辅助已开启':'AI 不消耗 Token'}`;
@@ -327,13 +328,38 @@ $('bili-login-start').addEventListener('click',async()=>{
   finally{btn.disabled=false;}
 });
 $('bili-qr-check').addEventListener('click',checkBiliQr);
-$('bili-mode-qr-tab').addEventListener('click',()=>{
-  $('bili-mode-qr').hidden=false;$('bili-mode-sms').hidden=true;
-  $('bili-mode-qr-tab').classList.add('selected');$('bili-mode-sms-tab').classList.remove('selected');
+function selectBiliLoginMode(mode){
+  endQrPolling();
+  for(const kind of ['manual','qr','sms']){
+    $('bili-mode-'+kind).hidden=kind!==mode;
+    $('bili-mode-'+kind+'-tab').classList.toggle('selected',kind===mode);
+  }
+}
+for(const mode of ['manual','qr','sms'])
+  $('bili-mode-'+mode+'-tab').addEventListener('click',()=>selectBiliLoginMode(mode));
+function clearManualCredential(){ $('bili-manual-cookie').value=''; }
+$('bili-manual-import').addEventListener('click',async()=>{
+  const input=$('bili-manual-cookie');
+  const cookie=input.value.trim();
+  if(!cookie){$('bili-manual-status').textContent='请填写你自己账号的 SESSDATA 或 B站 Cookie';return;}
+  if(!$('bili-manual-trust').checked){$('bili-manual-status').textContent='请先确认账号所有权与管理页面的连接安全';return;}
+  const button=$('bili-manual-import');button.disabled=true;
+  $('bili-manual-status').textContent='正在向 B站验证会话，验证成功才保存…';
+  try{
+    const result=await bridge.apiPost('bili/session/import',{cookie});
+    $('bili-manual-status').textContent=`已验证登录：${result.uname||'B站账号'}（UID ${result.mid}）。会话只存储在 AstrBot 私有目录。`;
+    await reload();
+  }catch(err){$('bili-manual-status').textContent='导入失败：'+(err?.message||String(err))+'；不会覆盖原先的已保存会话';}
+  finally{clearManualCredential();button.disabled=false;}
 });
-$('bili-mode-sms-tab').addEventListener('click',()=>{
-  endQrPolling();$('bili-mode-qr').hidden=true;$('bili-mode-sms').hidden=false;
-  $('bili-mode-sms-tab').classList.add('selected');$('bili-mode-qr-tab').classList.remove('selected');
+$('bili-manual-check').addEventListener('click',async()=>{
+  const button=$('bili-manual-check');button.disabled=true;
+  $('bili-manual-status').textContent='正在向 B站验证已保存的会话…';
+  try{
+    const result=await bridge.apiPost('bili/session/check',{});
+    $('bili-manual-status').textContent=`B站会话有效：${result.uname||'已登录'}（UID ${result.mid}）。`;
+  }catch(err){$('bili-manual-status').textContent='会话验证失败：'+(err?.message||String(err));}
+  finally{button.disabled=false;}
 });
 let geetestProof=null;
 let geetestLoader=null;
@@ -400,6 +426,7 @@ $('bili-sms-login').addEventListener('click',async()=>{
 $('bili-login-logout').addEventListener('click',async()=>{
   if(!await askUser('只清除插件的 B站本地会话；这不会退出你手机上的 B站 App。',{title:'清除 B站会话'}))return;
   endQrPolling();$('bili-qr-box').hidden=true;geetestProof=null;
+  clearManualCredential();$('bili-manual-status').textContent='登录会话已清除。';
   await apiAction('bili/logout',{});
 });
 $('bili-save').addEventListener('click',()=> $('save').click());

@@ -1,4 +1,4 @@
-"""Optional Bilibili QR and human-verified SMS login (public endpoints).
+"""Bilibili login via verified owner-supplied web session, QR, or SMS.
 
 A browser completes the real GeeTest challenge; the plugin never computes or
 bypasses it. QR/session keys and SMS tokens stay in server memory. Cookies are
@@ -65,6 +65,59 @@ def _api_data(payload, operation):
     return data if isinstance(data, dict) else {}
 
 
+def parse_manual_session(raw):
+    """Accept a user's own Bilibili browser Cookie header or SESSDATA value.
+
+    Never accept access token URLs, arbitrary headers, or additional secret fields.
+    We only persist the minimum Cookie allowlist already used by the plugin.
+    """
+    if not isinstance(raw, str) or not 12 <= len(raw) <= 4096 or any(ord(c) < 32 or ord(c) == 127 for c in raw):
+        raise ValueError('会话内容无效；只支持 B站网页 Cookie 或 SESSDATA')
+    text = raw.strip()
+    if '://' in text or text.lower().startswith(('authorization:', 'bearer ', 'token ')):
+        raise ValueError('请输入 B站浏览器 Cookie，而不是网页地址或其他访问令牌')
+    if text.lower().startswith('cookie:'):
+        text = text[7:].strip()
+    # A lone SESSDATA is supported for easier import from a trusted browser.
+    if ';' not in text and '=' not in text:
+        text = 'SESSDATA=' + text
+    result = {}
+    for part in text.split(';'):
+        if not part.strip():
+            continue
+        if '=' not in part:
+            raise ValueError('Cookie 格式错误；应为 SESSDATA=值; bili_jct=值')
+        name, value = part.strip().split('=', 1)
+        name, value = name.strip(), value.strip()
+        if name in ALLOWED:
+            if name in result:
+                raise ValueError('会话 Cookie 中存在重复字段')
+            if not value or len(value) > 1023 or any(c.isspace() or c in '\r\n;' for c in value):
+                raise ValueError('Cookie 字段存在无效字符')
+            result[name] = value
+    if len(result.get('SESSDATA', '')) < 12:
+        raise ValueError('请填写有效的 SESSDATA；普通 API Token 不能代替网页登录 Cookie')
+    if 'DedeUserID' in result and not result['DedeUserID'].isdigit():
+        raise ValueError('DedeUserID 只能包含数字')
+    return result
+
+
+def public_nav_identity(payload):
+    """Explicit online login success check; no account secrets in return data."""
+    if not isinstance(payload, dict):
+        raise ValueError('B站账号验证响应无效')
+    if payload.get('code') != 0:
+        raise ValueError('B站账号验证失败；会话可能过期或已被限制')
+    item = payload.get('data')
+    if not isinstance(item, dict) or item.get('isLogin') is not True:
+        raise ValueError('B站显示当前未登录，请重新从你自己的浏览器取得有效会话')
+    mid = item.get('mid')
+    if type(mid) is not int or mid <= 0:
+        raise ValueError('B站没有返回有效账号 UID，未保存会话')
+    uname = str(item.get('uname') or '').strip()[:65]
+    return {'verified': True, 'mid': mid, 'uname': uname or '已登录账号'}
+
+
 class BiliAuth:
     def __init__(self, data_dir):
         self.path = Path(data_dir) / 'bili-session.json'
@@ -110,6 +163,40 @@ class BiliAuth:
                 'status': '已保存登录会话（可能过期）' if saved.get('SESSDATA') else '未登录',
                 'qr_pending': bool(self._qr_key) and time.monotonic() - self._qr_started < 180,
                 'sms_pending': bool(self._sms) and time.monotonic() - self._sms['at'] < 300}
+
+    async def _verify_cookies(self, cookies):
+        """Check session only against the fixed Bilibili nav endpoint."""
+        header = '; '.join(f'{k}={v}' for k, v in cookies.items())
+        if not header:
+            raise ValueError('没有可用的 B站登录会话')
+        headers = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/122.0 Safari/537.36',
+                   'Referer': 'https://www.bilibili.com/', 'Cookie': header}
+        try:
+            async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=9), trust_env=False) as session:
+                async with session.get('https://api.bilibili.com/x/web-interface/nav',
+                                       allow_redirects=False) as response:
+                    response.raise_for_status()
+                    payload = await response.json(content_type=None)
+        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+            # No raw HTTP response, headers, or cookie values in errors.
+            raise ValueError(f'B站账号验证网络失败（{type(exc).__name__}），请检查 NAS 访问 B站的网络') from None
+        return public_nav_identity(payload)
+
+    async def import_session(self, raw):
+        cookies = parse_manual_session(raw)
+        # Fail closed: never overwrite an existing working session with an unverified one.
+        account = await self._verify_cookies(cookies)
+        self._save(cookies)
+        return {'ok': True, 'verified': True, 'mid': account['mid'], 'uname': account['uname'],
+                'notice': 'B站网页登录会话已验证并保存在 AstrBot 私有目录（不会回显 Cookie）'}
+
+    async def verify_session(self):
+        cookies = self._read()
+        if not cookies.get('SESSDATA'):
+            raise ValueError('尚未导入或扫码取得 B站会话')
+        account = await self._verify_cookies(cookies)
+        return {'ok': True, **account,
+                'notice': 'B站已确认当前网页登录会话有效。实际视频接口仍可能限流。'}
 
     def cookie_header(self):
         return '; '.join(f'{k}={v}' for k, v in self._read().items())

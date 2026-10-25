@@ -2,7 +2,7 @@
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Steam Freebies · AstrBot 控制台</title><link rel="stylesheet" href="./style.css"></head>
 <body><div class="shell">
 <aside class="sidebar"><div class="brand"><div class="brand-mark">S</div><div><strong>STEAM FREEBIES</strong><span>AstrBot 控制台</span></div></div>
-<div class="nav-caption">工作台</div><nav aria-label="主导航"><a href="#dashboard" class="active">◈ <span>监控概览</span></a><a href="#activity">◫ <span>免费活动</span></a><a href="#price-watch">₱ <span>游戏关注</span></a><a href="#bilibili">▷ <span>B站线索</span></a><a href="#claims">✓ <span>领取记录</span></a><a href="#automation">⚙ <span>监控设置</span></a><a href="#asf">⌘ <span>内置 ASF</span></a><a href="#qq">☷ <span>QQ群组</span></a></nav><div class="sidebar-bottom"><span class="glow-dot"></span> ASTROBOT PLUGIN <strong>v0.6.4</strong></div></aside>
+<div class="nav-caption">工作台</div><nav aria-label="主导航"><a href="#dashboard" class="active">◈ <span>监控概览</span></a><a href="#activity">◫ <span>免费活动</span></a><a href="#price-watch">₱ <span>游戏关注</span></a><a href="#bilibili">▷ <span>B站线索</span></a><a href="#claims">✓ <span>领取记录</span></a><a href="#automation">⚙ <span>监控设置</span></a><a href="#asf">⌘ <span>内置 ASF</span></a><a href="#qq">☷ <span>QQ群组</span></a></nav><div class="sidebar-bottom"><span class="glow-dot"></span> ASTROBOT PLUGIN <strong>v0.6.6</strong></div></aside>
 <main class="workspace">
 <header class="topbar"><div class="crumb">STEAM FREEBIES <span>/</span> <b>监控控制台</b></div><div class="top-actions"><span id="clock" class="clock"></span><button id="refresh" class="btn ghost">↻ 刷新</button><button id="scan" class="btn primary">◈ 立即扫描</button></div></header>
 <section id="dashboard" class="hero"><div><span class="eyebrow">YOUR GIVEAWAY COMMAND CENTER</span><h1>限免与价格变化，不再错过。</h1><p>统一监控 Steam 商店促销及第三方 Steam Key 活动，自动向 QQ 群播报，并追踪 ASF 领取结果。</p><div class="hero-foot"><span id="scan-status" class="pill neutral">等待首次扫描</span><span id="source-status" class="small-note">数据状态尚未加载</span></div></div><div class="hero-art" aria-hidden="true"><div class="orbit one"></div><div class="orbit two"></div><div class="big-gift">✧</div></div></section>
@@ -35,8 +35,16 @@
 <div class="panel bili-panel">
 <div class="bili-step"><span class="step-number">01</span><div><h3>登录 B站账号（任选一种）</h3><p class="subtitle">在当前面板中完成登录，无需打开新窗口。B站搜索可能仍受 IP 风控；登录只改善部分访问权限。</p></div></div>
 <div class="bili-action-row"><span class="pill neutral" id="bili-login-status">未登录</span><button class="btn ghost" id="bili-login-logout" type="button">清除本地登录</button></div>
-<div class="bili-login-tabs" role="group" aria-label="选择 B站登录方式"><button type="button" id="bili-mode-qr-tab" class="selected">手机扫码登录</button><button type="button" id="bili-mode-sms-tab">短信验证码登录</button></div>
-<div id="bili-mode-qr" class="bili-login-mode"><p class="subtitle">二维码使用 B站官方接口返回的原始链接，仅用于向本 NAS 的 AstrBot 授权 B站登录会话。若手机提示登录环境存在风险或拒绝授权，请取消操作；本插件不能解除 B站风控。无需登录也可尝试监控公开投稿。</p>
+<div class="bili-login-tabs" role="group" aria-label="选择 B站登录方式"><button type="button" id="bili-mode-manual-tab" class="selected">已有网页登录会话（推荐）</button><button type="button" id="bili-mode-qr-tab">手机扫码</button><button type="button" id="bili-mode-sms-tab">短信验证码</button></div>
+<div id="bili-mode-manual" class="bili-login-mode">
+<p class="subtitle">在自己的浏览器登录 B站官网后，可以导入该网页登录会话。注意：这不是 API Key 或手机令牌。SESSDATA 等 Cookie 相当于账号密码，请只在可信的 HTTPS AstrBot 管理页面操作。整站网页登录页无法可靠嵌入本 iframe。</p>
+<label class="field" for="bili-manual-cookie">B站网页登录 Cookie（支持仅填 SESSDATA，或粘贴完整 Cookie 字符串）</label>
+<input id="bili-manual-cookie" type="password" maxlength="4096" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="SESSDATA=...; bili_jct=...; DedeUserID=..." aria-describedby="bili-manual-status" />
+<label class="toggle-line"><span><strong>我确认这是自己的账号，并在可信的 HTTPS 或受保护的本地连接中操作</strong><small>导入的 Cookie 只用于本插件向 B站查询公开信息；如果怀疑泄露，请立即在 B站官方安全中心退出其他登录设备。</small></span><input id="bili-manual-trust" type="checkbox"></label>
+<div class="bili-action-row"><button class="btn primary" id="bili-manual-import" type="button">导入并验证会话</button><button class="btn ghost" id="bili-manual-check" type="button">检查当前会话有效性</button></div>
+<p class="hint" id="bili-manual-status" role="status" aria-live="polite">手动导入前请在 B站官网正常登录；不会向页面回传 Cookie。</p>
+</div><div class="bili-login-tabs" role="group" aria-label="选择 B站登录方式"><button type="button" id="bili-mode-qr-tab">手机扫码登录</button><button type="button" id="bili-mode-sms-tab">短信验证码登录</button></div>
+<div id="bili-mode-qr" class="bili-login-mode" hidden><p class="subtitle">二维码使用 B站官方接口返回的原始链接，仅用于向本 NAS 的 AstrBot 授权 B站登录会话。若手机提示登录环境存在风险或拒绝授权，请取消操作；本插件不能解除 B站风控。无需登录也可尝试监控公开投稿。</p>
 <button class="btn primary" id="bili-login-start" type="button">生成 B站登录二维码</button><p class="hint" id="bili-qr-progress" role="status" aria-live="polite">点击按钮申请官方登录二维码</p>
 <div class="bili-qr-block" id="bili-qr-box" hidden><div id="bili-qr-grid" class="bili-qr-grid" role="img" aria-label="哔哩哔哩官方登录二维码"></div><div><strong>请在手机 B站 App 内核对授权风险</strong><p class="subtitle" id="bili-qr-hint">二维码有效期约 180 秒</p><button class="btn ghost" id="bili-qr-check" type="button">↻ 检查扫码结果</button></div></div></div>
 <div id="bili-mode-sms" class="bili-login-mode" hidden>
