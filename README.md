@@ -1,6 +1,6 @@
 # Steam 喜加一监控 · AstrBot 插件
 
-> **v0.3.3（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
+> **v0.3.4（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
 
 独立插件，适用于 AstrBot ≥ 4.29.1 / Python ≥ 3.12；支持 AstrBot 的 OneBot（如 NapCat）与 QQ 官方适配器。借鉴 [原项目](https://github.com/LiChenguang6/astrbot_plugin_steam_status_monitor) 的插件面板架构，**不影响该项目**。
 
@@ -155,3 +155,17 @@ ASF 官方资料：[项目](https://github.com/JustArchiNET/ArchiSteamFarm) · [
 **NAS 内存:** 面板能够显示 Linux `/proc` 中 ASF 进程的实际常驻物理内存（RSS），不是预测值。缓存页通常可回收，但不要把 NAS 的缓存值全部当成可用内存。对 4GB 机器，建议保持足够的系统余量，并先尝试低资源兼容模式。
 
 资料： [.NET Globalization Invariant Mode](https://learn.microsoft.com/en-us/dotnet/core/runtime-config/globalization) · [ASF OptimizationMode](https://github.com/JustArchiNET/ArchiSteamFarm/wiki/Configuration#optimizationmode)
+
+## 群晖 Docker：为什么 ASF 本机管理界面点不开？（v0.3.4）
+
+**`127.0.0.1` 永远指发起连接的那台机器。** 当电脑浏览器打开 `http://127.0.0.1:1242`，连接的是电脑；ASF 却在群晖 AstrBot Docker 容器里。即使 ASF 处于运行状态，也不会自动转发过去。v0.3.4 将面板中的误导性链接替换为群晖专用说明，而非自动暴露管理端口。
+
+安全访问 ASF-ui 需要遵循官方 [ASF IPC](https://github.com/JustArchiNET/ArchiSteamFarm/wiki/IPC) 与 [ASF Docker](https://github.com/JustArchiNET/ArchiSteamFarm/wiki/Docker) 文档：
+
+1. 确认 ASF 已运行且已有随机 `IPCPassword`，不要修改为无密码。
+2. 仅在确认容器端口将映射到宿主机 `127.0.0.1` 后，才在 ASF 的 `runtime/config/IPC.config` 中配置 `{"Kestrel":{"Endpoints":{"HTTP":{"Url":"http://*:1242"}}}}`，让 Docker 可以转发 ASF 的 IPC。
+3. 在群晖 Container Manager 使用现有 AstrBot Compose 配置追加端口 `127.0.0.1:1242:1242`；**不能通过 NAS GUI 限制监听地址时不要使用面向所有网卡的 `1242:1242`**。重建容器前确保数据卷持久化。
+4. 在电脑终端运行 `ssh -N -L 1242:127.0.0.1:1242 NAS_USER@NAS_IP`，NAS_USER 和 NAS_IP 改成群晖 SSH 用户及局域网 IP。保持 SSH 打开，在电脑浏览器访问 `http://127.0.0.1:1242/`。
+5. ASF-ui 登录需要的 IPC 密码在 NAS 私有的 `runtime/config/ASF.json`（`IPCPassword`），随后使用 ASF-ui 配置 Steam 帐号与 Steam Guard，并启用 Bot。**不要将密码或 Steam Guard 信息发送给 QQ、GitHub 或聊天助手。**
+
+当前插件已经能创建不含密码的 Bot 配置并使用 ASF IPC 领取已批准的免费 SubID，但它**没有**提供与 ASF-ui 等价的安全浏览器代理。仅仅创建 Bot 配置并填写 Steam 登录名，不等于完成 Steam 身份验证。为了防止账号被接管，本插件不会擅自对公网打开 1242 端口。
