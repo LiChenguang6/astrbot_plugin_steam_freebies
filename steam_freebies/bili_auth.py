@@ -11,7 +11,7 @@ import os
 import re
 import time
 from pathlib import Path
-from urllib.parse import urlsplit, urlencode, parse_qs
+from urllib.parse import urlsplit, parse_qs
 
 import aiohttp
 
@@ -27,26 +27,31 @@ CAPTCHA_ANSWER_RE = re.compile(r'^[a-zA-Z0-9_\-|]{15,512}$')
 
 
 def is_official_scan_url(value):
+    """Only an actual Bilibili-issued login URL can be used as QR payload.
+
+    Do not mint an alternative URL from qrcode_key: a mobile client may flag a
+    self-assembled login link as suspicious, and an undocumented path change
+    must fail closed rather than silently invent a different authentication URL.
+    """
     if not isinstance(value, str) or len(value) > 500:
         return False
-    url = urlsplit(value)
-    return url.scheme == 'https' and url.hostname == 'passport.bilibili.com' and not url.username and not url.password
+    try:
+        parts = urlsplit(value)
+        return (parts.scheme == 'https' and parts.hostname == 'passport.bilibili.com'
+                and parts.port in (None, 443) and not parts.username and not parts.password
+                and not parts.fragment and parts.path == '/h5-app/passport/login/scan')
+    except ValueError:
+        return False
 
 
 def _safe_scan_url(url, key):
-    """Use Bilibili's supplied official URL if it matches key, else canonical URL.
-
-    Never send users to arbitrary hosts and never expose a QR login key in diagnostics.
-    The key comes from an authenticated, code=0 Bilibili response.
-    """
-    canonical = PASSPORT + '/h5-app/passport/login/scan?' + urlencode({'navhide': '1', 'qrcode_key': key})
+    """Reject altered/missing official QR URLs; never construct a replacement."""
     if not is_official_scan_url(url):
-        return canonical
-    parts = urlsplit(url)
-    if parts.path != '/h5-app/passport/login/scan':
-        return canonical
-    embedded = parse_qs(parts.query).get('qrcode_key', [])
-    return url if embedded == [key] else canonical
+        raise ValueError('B站返回的扫码地址不符合官方预期，已拒绝生成替代二维码；请使用 B站官方登录页面')
+    embedded = parse_qs(urlsplit(url).query, keep_blank_values=True).get('qrcode_key', [])
+    if embedded != [key]:
+        raise ValueError('B站二维码地址与授权密钥不匹配，已拒绝生成替代二维码')
+    return url
 
 
 def _api_data(payload, operation):
@@ -141,7 +146,7 @@ class BiliAuth:
         matrix = [''.join('1' if bit else '0' for bit in row) for row in qr.get_matrix()]
         self._qr_key, self._qr_started, self._qr_last_poll = key, time.monotonic(), 0
         return {'ok': True, 'matrix': matrix, 'expires_seconds': 180,
-                'notice': '手机 B站 App 扫描下方二维码并确认。页面不需要跳转；180 秒内有效。'}
+                'notice': '二维码使用 B站接口原样返回的官方链接；若手机出现登录风险提示，请取消授权。约180秒内有效。'}
 
     def qr_begin(self):
         """Return instantly to AstrBot's WebUI; remote Bilibili may stall or time out.

@@ -295,7 +295,7 @@ async function checkBiliQrPreparation(){
     const result=await bridge.apiGet('bili/login/prepare');
     if(result.state==='ready'){
       renderBiliQr(result.matrix);
-      $('bili-qr-hint').textContent=result.notice||'请使用手机 B站 App 扫码确认';
+      $('bili-qr-hint').textContent=result.notice||'请在手机 B站 App 内核对登录风险；出现风险提示请取消授权';
       $('bili-qr-box').hidden=false;
       $('bili-qr-check').hidden=false;
       $('bili-qr-progress').textContent='二维码已生成，请在约 180 秒内扫码';

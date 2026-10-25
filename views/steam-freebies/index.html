@@ -36,9 +36,9 @@
 <div class="bili-step"><span class="step-number">01</span><div><h3>登录 B站账号（任选一种）</h3><p class="subtitle">在当前面板中完成登录，无需打开新窗口。B站搜索可能仍受 IP 风控；登录只改善部分访问权限。</p></div></div>
 <div class="bili-action-row"><span class="pill neutral" id="bili-login-status">未登录</span><button class="btn ghost" id="bili-login-logout" type="button">清除本地登录</button></div>
 <div class="bili-login-tabs" role="group" aria-label="选择 B站登录方式"><button type="button" id="bili-mode-qr-tab" class="selected">手机扫码登录</button><button type="button" id="bili-mode-sms-tab">短信验证码登录</button></div>
-<div id="bili-mode-qr" class="bili-login-mode"><p class="subtitle">推荐：直接在面板中显示二维码，使用另一台设备或手机 B站 App 扫描，不会发生网页跳转。</p>
+<div id="bili-mode-qr" class="bili-login-mode"><p class="subtitle">二维码使用 B站官方接口返回的原始链接，仅用于向本 NAS 的 AstrBot 授权 B站登录会话。若手机提示登录环境存在风险或拒绝授权，请取消操作；本插件不能解除 B站风控。无需登录也可尝试监控公开投稿。</p>
 <button class="btn primary" id="bili-login-start" type="button">生成 B站登录二维码</button><p class="hint" id="bili-qr-progress" role="status" aria-live="polite">点击按钮申请官方登录二维码</p>
-<div class="bili-qr-block" id="bili-qr-box" hidden><div id="bili-qr-grid" class="bili-qr-grid" role="img" aria-label="哔哩哔哩官方登录二维码"></div><div><strong>使用手机 B站 App 扫描并确认</strong><p class="subtitle" id="bili-qr-hint">二维码有效期约 180 秒</p><button class="btn ghost" id="bili-qr-check" type="button">↻ 检查扫码结果</button></div></div></div>
+<div class="bili-qr-block" id="bili-qr-box" hidden><div id="bili-qr-grid" class="bili-qr-grid" role="img" aria-label="哔哩哔哩官方登录二维码"></div><div><strong>请在手机 B站 App 内核对授权风险</strong><p class="subtitle" id="bili-qr-hint">二维码有效期约 180 秒</p><button class="btn ghost" id="bili-qr-check" type="button">↻ 检查扫码结果</button></div></div></div>
 <div id="bili-mode-sms" class="bili-login-mode" hidden>
 <p class="subtitle">B站短信登录需要先完成人机验证（极验），无法跳过。极验由官方组件处理；如果组件被浏览器阻止，请使用上方扫码方式。</p>
 <div class="two-col"><label class="field">手机号（中国大陆 +86）<input id="bili-sms-phone" type="text" inputmode="tel" autocomplete="tel" maxlength="20" placeholder="仅填手机号数字"></label><div class="field"><span>步骤 1：完成官方人机验证</span><button class="btn ghost" id="bili-sms-captcha" type="button">开始人机验证</button></div></div>

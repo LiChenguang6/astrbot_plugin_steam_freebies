@@ -8,18 +8,22 @@ import pytest
 from steam_freebies.bili_auth import BiliAuth, _safe_scan_url
 
 
-def test_safe_url_uses_only_official_domain_and_the_supplied_key():
+def test_safe_url_uses_only_unmodified_official_domain_and_the_supplied_key():
     key = 'f' * 32
-    good = f'https://passport.bilibili.com/h5-app/passport/login/scan?navhide=1&qrcode_key={key}'
+    good = f'https://passport.bilibili.com/h5-app/passport/login/scan?navhide=1&qrcode_key={key}&from='
     assert _safe_scan_url(good, key) == good
-    for link in ('https://attacker.com/?qrcode_key='+key, 'http://passport.bilibili.com',
+    # An unexpected/modified URL must fail closed rather than be silently replaced.
+    for link in ('https://attacker.com/?qrcode_key='+key,
+                 'http://passport.bilibili.com/h5-app/passport/login/scan?qrcode_key='+key,
                  'https://passport.bilibili.com.evil.com',
-                 'https://passport.bilibili.com/h5-app/passport/login/scan?qrcode_key=wrong',
+                 'https://passport.bilibili.com:8080/h5-app/passport/login/scan?qrcode_key='+key,
+                 f'https://passport.bilibili.com/h5-app/passport/login/scan?qrcode_key=wrong',
+                 f'https://passport.bilibili.com/h5-app/passport/login/scan?navhide=1',
+                 f'https://passport.bilibili.com/h5-app/passport/login/scan?qrcode_key={key}&qrcode_key={key}',
+                 f'https://passport.bilibili.com/anyotherpath?qrcode_key={key}',
                  '', None):
-        url=_safe_scan_url(link,key)
-        parts=urlsplit(url)
-        assert parts.hostname=='passport.bilibili.com' and parts.scheme=='https'
-        assert parse_qs(parts.query)['qrcode_key']==[key]
+        with pytest.raises(ValueError):
+            _safe_scan_url(link, key)
 
 
 def test_scan_preparation_returns_instantly_before_network_finishes(tmp_path,monkeypatch):
