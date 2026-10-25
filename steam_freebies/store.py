@@ -23,7 +23,8 @@ DEFAULT_SETTINGS = {
     "bili_discovery_mode": "creators",  # creators, search, both
     "bili_push_creators": True,
     "bili_push_search_verified": False,  # strict multi-source gate; opt in
-    "bili_auto_claim_creators": False,  # requires approved SubID and existing ASF approval
+    "bili_auto_claim_creators": False,  # legacy approved SubID path
+    "bili_unattended_claim": False,  # opt-in: free games from subscribed UP -> app/<AppID>
 
     "bili_keywords": "Steam 喜加一,Steam 永久免费,Steam 限时免费",
     "bili_ai_enabled": False,
@@ -56,7 +57,17 @@ class Store:
           first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
           approved_subid INTEGER NOT NULL DEFAULT 0,
           steam_url TEXT NOT NULL DEFAULT '', bili_source_url TEXT NOT NULL DEFAULT '',
+          steam_state TEXT NOT NULL DEFAULT '',
           bili_origin TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS auto_claims(
+          game_key TEXT PRIMARY KEY, appid INTEGER NOT NULL, license_type TEXT NOT NULL,
+          license_id INTEGER NOT NULL, at TEXT NOT NULL, status TEXT NOT NULL,
+          result TEXT NOT NULL, ai_note TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS auto_claim_review_sent(
+          target_id INTEGER NOT NULL, game_key TEXT NOT NULL, at TEXT NOT NULL,
+          PRIMARY KEY(target_id,game_key)
         );
         CREATE TABLE IF NOT EXISTS sent(
           target_id INTEGER NOT NULL, game_key TEXT NOT NULL,
@@ -97,9 +108,14 @@ class Store:
         """)
         # Non-destructive schema upgrade on existing NAS SQLite files.
         columns={r[1] for r in self.db.execute('PRAGMA table_info(games)')}
-        for name in ('steam_url','bili_source_url','bili_origin'):
+        for name in ('steam_url','bili_source_url','bili_origin','steam_state'):
             if name not in columns:
                 self.db.execute(f"ALTER TABLE games ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+        # Interrupted in-flight claims are reviewable after a restart, never automatically resent.
+        with self.db:
+            self.db.execute("""UPDATE auto_claims SET status='failed',
+                result='上一次 ASF 请求中断，无法确认是否获得许可；请检查账户后再手动重试'
+                WHERE status='checking'""")
         # v0.6 migration: old auto-sampled rows must not remain in the watchlist.
         # Manual watches and their price history are preserved.
         with self.db:
@@ -123,7 +139,7 @@ class Store:
         if "scan_minutes" in values and (type(values["scan_minutes"]) is not int or not 30 <= values["scan_minutes"] <= 360):
             raise ValueError("扫描间隔须为 30–360 分钟")
         for k in ("push_enabled", "push_steam", "push_third_party", "push_claim_results", "auto_claim_enabled", "price_monitor_enabled", "push_paid_to_free",
-                  "push_watch_prices", "bili_enabled", "push_bilibili", "bili_push_creators", "bili_push_search_verified", "bili_auto_claim_creators", "bili_ai_enabled", "steam_search_fallback"):
+                  "push_watch_prices", "bili_enabled", "push_bilibili", "bili_push_creators", "bili_push_search_verified", "bili_auto_claim_creators", "bili_unattended_claim", "bili_ai_enabled", "steam_search_fallback"):
             if k in values and type(values[k]) is not bool:
                 raise ValueError(f"{k} 必须是布尔值")
         if 'bili_discovery_mode' in values and values['bili_discovery_mode'] not in ('creators','search','both'):
@@ -174,16 +190,16 @@ class Store:
                 if not g.get("key") or not g.get("name"):
                     continue
                 cursor = self.db.execute("""
-                  INSERT INTO games(key,name,source,kind,appid,url,original_price,end_date,confidence,first_seen,last_seen,steam_url,bili_source_url,bili_origin)
-                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                  INSERT INTO games(key,name,source,kind,appid,url,original_price,end_date,confidence,first_seen,last_seen,steam_url,bili_source_url,bili_origin,steam_state)
+                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                   ON CONFLICT(key) DO UPDATE SET name=excluded.name,url=excluded.url,
                     original_price=excluded.original_price,end_date=excluded.end_date,
                     confidence=excluded.confidence,last_seen=excluded.last_seen,
                     steam_url=excluded.steam_url,bili_source_url=excluded.bili_source_url,
-                    bili_origin=excluded.bili_origin
+                    bili_origin=excluded.bili_origin,steam_state=excluded.steam_state
                   """, (g["key"],g["name"],g["source"],g["kind"],int(g.get("appid") or 0),g["url"],
                           g.get("original_price",""),g.get("end_date",""),g.get("confidence",""),now,now,
-                          g.get('steam_url',''),g.get('bili_source_url',''),g.get('bili_origin','')))
+                          g.get('steam_url',''),g.get('bili_source_url',''),g.get('bili_origin',''),g.get('steam_state','')))
                 added += int(cursor.rowcount > 0)  # SQL upsert count, not "new" count
         return added
 
@@ -214,7 +230,7 @@ class Store:
         query = """
          SELECT g.* FROM games g LEFT JOIN sent s ON s.game_key=g.key AND s.target_id=?
          WHERE s.game_key IS NULL AND g.last_seen>=?
-           AND ((g.kind='steam_candidate' AND ?=1) OR (g.kind='third_party' AND ?=1) OR (g.kind='paid_to_free' AND ?=1) OR (g.kind='watch_price' AND ?=1) OR (g.kind='bilibili_tip' AND ?=1 AND ((g.bili_origin='creator' AND ?=1) OR (g.bili_origin='search' AND ?=1))) OR (g.kind='promo_api' AND ?=1))
+           AND ((g.kind='steam_candidate' AND ?=1) OR (g.kind='third_party' AND ?=1) OR (g.kind='paid_to_free' AND ?=1) OR (g.kind='watch_price' AND ?=1) OR (g.kind='bilibili_tip' AND ?=1 AND ((g.bili_origin='creator' AND ?=1) OR (g.bili_origin='search' AND ?=1 AND (EXISTS (SELECT 1 FROM auto_claims ac WHERE ac.game_key=g.key AND ac.status='reported_success') OR EXISTS (SELECT 1 FROM claims c WHERE c.game_key=g.key AND c.status='reported_success'))))) OR (g.kind='promo_api' AND ?=1))
          ORDER BY g.first_seen DESC LIMIT ?"""
         from datetime import timedelta
         since=(datetime.now(timezone.utc)-timedelta(hours=48)).isoformat(timespec='seconds')
@@ -266,6 +282,61 @@ class Store:
     def get_game(self, key):
         row = self.db.execute("SELECT * FROM games WHERE key=?", (key,)).fetchone()
         return dict(row) if row else None
+
+    def auto_claim_record(self, key, appid, license_type, license_id, status, result):
+        if status not in ('failed', 'submitted', 'reported_success', 'checking', 'handled'):
+            raise ValueError('自动领取状态无效')
+        if license_type not in ('app', 'sub') or type(license_id) is not int or license_id <= 0:
+            raise ValueError('自动领取许可证参数无效')
+        with self.db:
+            self.db.execute("""INSERT INTO auto_claims(game_key,appid,license_type,license_id,at,status,result)
+             VALUES(?,?,?,?,?,?,?) ON CONFLICT(game_key) DO UPDATE SET
+             appid=excluded.appid,license_type=excluded.license_type,license_id=excluded.license_id,
+             at=excluded.at,status=excluded.status,result=excluded.result,ai_note=''""",
+             (key,appid,license_type,license_id,utcnow(),status,str(result)[:500]))
+
+    def auto_claim_get(self, key):
+        r=self.db.execute('SELECT * FROM auto_claims WHERE game_key=?',(key,)).fetchone()
+        return dict(r) if r else None
+
+    def auto_claim_pending(self, limit=6):
+        from datetime import timedelta
+        since=(datetime.now(timezone.utc)-timedelta(hours=48)).isoformat(timespec='seconds')
+        return [dict(r) for r in self.db.execute("""SELECT g.* FROM games g LEFT JOIN auto_claims a ON a.game_key=g.key
+          WHERE g.kind='bilibili_tip' AND g.bili_origin='creator' AND g.last_seen>=?
+          AND g.appid>0 AND g.steam_url=('https://store.steampowered.com/app/' || g.appid || '/')
+          AND g.steam_state IN ('free','sale_100') AND a.game_key IS NULL
+          ORDER BY g.last_seen DESC LIMIT ?""",(since,limit))]
+
+    def auto_claim_overview(self, limit=70):
+        return [dict(r) for r in self.db.execute("""SELECT a.*,g.name,g.steam_url,g.bili_source_url,
+          g.steam_state,g.approved_subid FROM auto_claims a JOIN games g ON g.key=a.game_key
+          ORDER BY CASE WHEN a.status IN ('failed','submitted') THEN 0 ELSE 1 END,a.at DESC LIMIT ?""",(limit,))]
+
+    def auto_claim_set_note(self, key, note):
+        with self.db:
+            self.db.execute('UPDATE auto_claims SET ai_note=? WHERE game_key=?',(str(note)[:500],key))
+
+    def pending_auto_review_pushes(self, target_id, limit=5):
+        if not self.settings()['push_claim_results']:
+            return []
+        return [dict(r) for r in self.db.execute("""SELECT a.*,g.name,g.steam_url,g.bili_source_url
+            FROM auto_claims a JOIN games g ON g.key=a.game_key
+            LEFT JOIN auto_claim_review_sent s ON s.target_id=? AND s.game_key=a.game_key
+            WHERE a.status IN ('failed','submitted') AND s.game_key IS NULL
+            ORDER BY a.at DESC LIMIT ?""",(target_id,limit))]
+
+    def mark_auto_review_sent(self, target_id, key):
+        with self.db:
+            self.db.execute('INSERT OR IGNORE INTO auto_claim_review_sent VALUES(?,?,?)',(target_id,key,utcnow()))
+
+    def auto_claim_resolve(self, key):
+        r=self.auto_claim_get(key)
+        if not r or r['status'] not in ('failed','submitted'):
+            raise ValueError('此项目无需人工接管')
+        with self.db:
+            self.db.execute("UPDATE auto_claims SET status='handled' WHERE game_key=?",(key,))
+        return {'ok':True,'notice':'已标记为人工处理，历史仍保留'}
 
     def add_price_watch(self, appid):
         '''Manual watch adds a baseline, never sends a fake historical conversion.'''

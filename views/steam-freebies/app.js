@@ -87,6 +87,7 @@ function makeGame(game){
     }
     if(game.claim_status)card.append(e('div',`上次 ASF 反馈：${labels[game.claim_status]||game.claim_status} · ${(game.claim_result||'').slice(0,140)}`,'record-text'));
   }
+  if(game.kind==='bilibili_tip'){externalActions(actions,game.steam_url,'Steam 外部访问');externalActions(actions,game.bili_source_url,'B站外部访问');}
   card.append(actions);return card;
 }
 function showGames(){
@@ -103,6 +104,40 @@ function showClaimHistory(){
     item.append(left,e('span',labels[x.status]||x.status,`result-status ${x.status}`));return item;
   });
   $('claim-history').replaceChildren(...(items.length?items:[e('p','还没有 ASF 领取记录。','empty')]));
+}
+// Sandboxed AstrBot panels may block external navigation/popups.
+// Offer copyable public URLs instead of relying on target=_blank alone.
+function safePublicUrl(url){
+  try{const u=new URL(url);return u.protocol==='https:' &&
+   ['store.steampowered.com','www.bilibili.com','t.bilibili.com'].includes(u.hostname)?u.href:'';}
+  catch(_){return '';}
+}
+function externalActions(parent,url,title){
+  const val=safePublicUrl(url);if(!val)return;
+  const a=e('a',title+' ↗','btn ghost');a.href=val;a.target='_blank';a.rel='noopener noreferrer';parent.append(a);
+  const button=e('button','复制链接','btn ghost');button.type='button';
+  button.addEventListener('click',async()=>{
+    try{await navigator.clipboard.writeText(val);toast('链接已复制，在浏览器外部标签页打开即可');}
+    catch(_){const input=e('input');input.value=val;input.readOnly=true;parent.append(input);input.focus();input.select();toast('浏览器限制剪贴板，请复制已选中的链接到地址栏');}
+  });parent.append(button);
+}
+function showReviews(){
+  const all=data.auto_claims||[], open=all.filter(x=>['failed','submitted','checking'].includes(x.status));
+  $('review-count').textContent=`待处理 ${open.length} / 全部 ${all.length}`;
+  const cards=all.map(x=>{
+    const item=e('article',undefined,'activity-item');const left=e('div');
+    left.append(e('strong',x.name||x.game_key),e('small',`许可证 ${x.license_type}/${x.license_id} · ${x.status==='reported_success'?'ASF 报告成功（非最终入库核验）':x.status} · ${x.result||''}`));
+    if(x.ai_note)left.append(e('small',`AI 建议：${x.ai_note}`));
+    const links=e('div',undefined,'actions');externalActions(links,x.steam_url,'Steam 商店');externalActions(links,x.bili_source_url,'B站原始来源');
+    if(['failed','submitted'].includes(x.status)){
+      const ai=e('button','交给 AI 分析','btn ghost');ai.onclick=()=>apiAction('review/ai',{key:x.game_key});
+      const retry=e('button','重新核验并领取','btn ghost');retry.onclick=()=>apiAction('review/retry',{key:x.game_key});
+      const done=e('button','我已自行处理','btn ghost');done.onclick=async()=>{if(await askUser('标记为已经自行处理？不表示 Steam 已永久入库。'))await apiAction('review/resolve',{key:x.game_key});};
+      links.append(ai,retry,done);
+    }
+    left.append(links);item.append(left);return item;
+  });
+  $('review-list').replaceChildren(...(cards.length?cards:[e('p','暂无自动领取或待处理任务','empty')]));
 }
 function showTargets(){
   const targets=data.targets||[];
@@ -195,6 +230,7 @@ function render(){
   $('bili-push-creators').checked=data.settings.bili_push_creators!==false;
   $('bili-push-search').checked=Boolean(data.settings.bili_push_search_verified);
   $('bili-auto-claim').checked=Boolean(data.settings.bili_auto_claim_creators);
+  $('bili-unattended').checked=Boolean(data.settings.bili_unattended_claim);
   $('bili-ai-enabled').checked=data.settings.bili_ai_enabled;
   $('bili-ai-calls').value=String(data.settings.bili_ai_calls??2);
   $('steam-proxy-mode').value=data.settings.steam_proxy_mode||'auto';
@@ -203,7 +239,7 @@ function render(){
   $('steam-network-status').textContent='Steam 请求：'+(data.steam_network?.via||'直连')+
     ' · '+(data.settings.steam_search_fallback?'网页搜索后备源开启':'网页搜索后备源已关闭（推荐）');
   if(document.activeElement!==$('bili-keywords'))$('bili-keywords').value=data.settings.bili_keywords||'';
-  showGames(); showClaimHistory(); showTargets(); showASF(); showPrices(); showBili(); syncAsfProgress();
+  showGames(); showClaimHistory(); showReviews(); showTargets(); showASF(); showPrices(); showBili(); syncAsfProgress();
 }
 async function reload(){
   if(!bridge)return;
@@ -259,6 +295,7 @@ function showBiliTestResult(value){
     const left=e('div');left.append(e('strong',it.name),e('small',it.detail||''));
     if(it.url){const a=e('a','B站来源 ↗');a.href=it.url;a.target='_blank';a.rel='noopener noreferrer';left.append(a);}
     if(it.steam_url){const a=e('a','Steam ↗');a.href=it.steam_url;a.target='_blank';a.rel='noopener noreferrer';left.append(a);}
+    externalActions(left,it.steam_url,'Steam 外部访问');externalActions(left,it.url,'B站外部访问');
     card.append(left,e('span',it.kind==='eligible'?'符合候选':'未通过筛选','pill neutral'));return card;
   });
   $('bili-test-results').replaceChildren(...(items.length?items:[e('p','尚无符合关键词的近期动态或视频。','empty')]));
@@ -484,6 +521,7 @@ $('save').addEventListener('click',()=>apiAction('settings',{
   bili_push_creators:$('bili-push-creators').checked,
   bili_push_search_verified:$('bili-push-search').checked,
   bili_auto_claim_creators:$('bili-auto-claim').checked,
+  bili_unattended_claim:$('bili-unattended').checked,
   bili_ai_enabled:$('bili-ai-enabled').checked,bili_ai_calls:Number($('bili-ai-calls').value),
   bili_keywords:$('bili-keywords').value.trim(),
   steam_proxy_mode:$('steam-proxy-mode').value,steam_proxy_url:$('steam-proxy-url').value.trim(),

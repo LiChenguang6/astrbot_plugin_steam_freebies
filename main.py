@@ -1,5 +1,6 @@
 """AstrBot QQ Steam freebies: discovery -> dedup -> push -> optional approved ASF claim."""
 import asyncio
+import aiohttp
 import os
 from datetime import datetime, timezone
 
@@ -9,7 +10,7 @@ from astrbot.api.message_components import Plain
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.api.web import error_response, json_response, request
 
-from .steam_freebies.asf import claim_sub
+from .steam_freebies.asf import claim_sub, claim_license
 from .steam_freebies.manager import ManagedASF
 from .steam_freebies.embedded_ui import EmbeddedUI
 from .steam_freebies.sources import fetch_candidates
@@ -19,6 +20,7 @@ from .steam_freebies.promotions import fetch_itad_promotions
 from .steam_freebies.bilibili import fetch_bilibili_tips, resolve_video_owner, extract_bvid
 from .steam_freebies.ai_config import AIConfig
 from .steam_freebies.price_monitor import monitor_prices
+from .steam_freebies.bili_verify import verify_steam
 from .steam_freebies.store import Store
 
 PLUGIN = "astrbot_plugin_steam_freebies"
@@ -47,6 +49,7 @@ class Main(Star):
         self.bili_test_task = None
         self.bili_test_result = {'state': 'idle', 'items': [], 'errors': []}
         self.manual_scan_task = None
+        self.review_tasks = {}
 
     async def initialize(self):
         api = {
@@ -55,6 +58,9 @@ class Main(Star):
             ("POST", "scan"): self.web_scan,
             ("POST", "approve"): self.web_approve,
             ("POST", "claim"): self.web_claim,
+            ("POST", "review/retry"): self.web_review_retry,
+            ("POST", "review/resolve"): self.web_review_resolve,
+            ("POST", "review/ai"): self.web_review_ai,
             ("POST", "test-send"): self.web_test,
             ("POST", "price/watch"): self.web_price_watch,
             ("POST", "price/unwatch"): self.web_price_unwatch,
@@ -151,7 +157,10 @@ class Main(Star):
             self.last_items = len(candidates)
             if candidates:
                 self.store.upsert_games(candidates)
-            # Creator-triggered auto-claims are opt-in and ONLY use pre-approved Steam SubIDs.
+            # Unattended creator claiming is deliberately opt-in and never attempts a purchase.
+            if self.store.settings()['bili_enabled'] and self.store.settings()['bili_unattended_claim']:
+                await self.process_unattended_creator_claims(network)
+            # Legacy approved SubID claims remain supported.
             if self.store.settings()['bili_enabled'] and self.store.settings()['bili_auto_claim_creators']:
                 await self.process_bili_creator_claims(candidates)
             # If all providers failed, don't treat that as an empty successful scan.
@@ -159,6 +168,8 @@ class Main(Star):
                 await self.push_to_groups()
             if self.store.settings()['auto_claim_enabled'] and candidates:
                 await self.process_approved_claims()
+            # Only failed/uncertain automatic claims require the user's attention.
+            await self.push_auto_review_notifications()
             # Delivery is retried even if both activity sources are unavailable.
             await self.push_claim_events()
             return {'candidates': len(candidates), 'errors': errors}
@@ -202,7 +213,7 @@ class Main(Star):
                             f"Steam：{g['steam_url']}\n"
                             f"B站原始来源：{g['bili_source_url']}\n"
                             f"核验：{g['confidence']}\n"
-                            "可领取不等于已永久入库；ASF 只领取预先批准的免费 SubID。")
+                            "可领取不等于已永久入库；ASF 可能尝试免费 app/ 或管理员批准的 sub/，状态见待处理区。")
                 else:
                     text = (f"🎁 免费游戏发现｜{kind}\n"
                             f"游戏：{g['name']}\n标价：{g['original_price'] or '未知'}\n"
@@ -217,6 +228,25 @@ class Main(Star):
                 else:
                     self.store.marked(target["id"], g["key"])
                     await asyncio.sleep(1)
+
+    async def push_auto_review_notifications(self):
+        if not self.store.settings()['push_claim_results']:
+            return
+        for target in self.store.targets():
+            if not target['enabled']:
+                continue
+            for task in self.store.pending_auto_review_pushes(target['id'],limit=4):
+                text=(f'⚠ Steam 免费游戏自动领取需接管\n'
+                      f'游戏：{task["name"]}\n'
+                      f'结果：{task["status"]}；{task["result"][:160]}\n'
+                      f'Steam：{task["steam_url"]}\n'
+                      f'B站来源：{task["bili_source_url"]}\n'
+                      '请在 AstrBot「自动领取与失败接管」面板中选择 AI 分析、重试或手动处理。')
+                try:await self.send_group(target,text)
+                except Exception as exc:
+                    self.errors.append(f'自动领取审核通知失败：{type(exc).__name__}')
+                    break
+                else:self.store.mark_auto_review_sent(target['id'],task['game_key'])
 
     async def push_claim_events(self):
         if not self.store.settings()['push_claim_results']:
@@ -268,12 +298,122 @@ class Main(Star):
         return {'status':status,'result':result,
                 'notice':'ASF 的返回不代表 Steam 永久许可证已经得到核验'}
 
+    async def _automatic_claim(self, game, network, *, retry=False):
+        """One app per attempt. Steam state is re-read immediately before every ASF call.
+
+        app/ does not establish permanent ownership for 100% promos. For such promos use a
+        previously user-approved sub/, otherwise an app/ trial is explicitly unconfirmed.
+        """
+        key=game['key'];appid=int(game['appid'])
+        if not retry and self.store.auto_claim_get(key):return
+        async with aiohttp.ClientSession() as session:
+            state,reason=await verify_steam(session,appid,network)
+        if state not in ('free','sale_100'):
+            self.store.auto_claim_record(key,appid,'app',appid,'failed',
+                f'领取前 Steam 重新核验未通过：{reason}')
+            return
+        subid=int(game.get('approved_subid') or 0)
+        kind='sub' if state=='sale_100' and subid>0 else 'app'
+        lid=subid if kind=='sub' else appid
+        # Save before the network request so a process restart cannot resend blindly.
+        self.store.auto_claim_record(key,appid,kind,lid,'checking','向 ASF 提交免费许可证请求中')
+        async with self.claim_lock:
+            prepared=False
+            try:
+                prepared=await self.asf_manager.prepare_for_claim()
+                status,result=await claim_license(kind,lid,self.asf_manager)
+                # A Steam 100% discount may require a dedicated free SubID; app/ can grant
+                # a temporary/limited license. Treat ambiguous results as review-worthy.
+                if state=='sale_100' and kind=='app' and status=='reported_success':
+                    status='submitted'
+                    result='ASF 已报告接收 app/ 请求，但 100% 折扣未能证明永久入库；请核查 Free-to-Keep SubID。'+result[:330]
+            except Exception as exc:
+                status,result='failed',f'{type(exc).__name__}: {str(exc)[:240]}'
+            finally:
+                if prepared:self.asf_manager.finish_claim()
+        self.store.auto_claim_record(key,appid,kind,lid,status,result)
+
+    async def process_unattended_creator_claims(self, network):
+        # At most 5 free-license requests each scan; SQLite deduplicates all runs.
+        for game in self.store.auto_claim_pending(limit=5):
+            try:
+                await self._automatic_claim(game,network)
+            except Exception as exc:
+                self.store.auto_claim_record(game['key'],game['appid'],'app',game['appid'],
+                                             'failed',f'自动领取异常：{type(exc).__name__}')
+            await asyncio.sleep(.4)
+
+    async def web_review_retry(self):
+        body=await request.json(default={})
+        key=body.get('key')
+        rec=self.store.auto_claim_get(key)
+        game=self.store.get_game(key)
+        if not rec or not game or rec['status'] not in ('failed','submitted'):
+            raise ValueError('找不到允许重试的待审核项目')
+        if key in self.review_tasks and not self.review_tasks[key].done():
+            raise ValueError('这项任务正在处理')
+        async def runner():
+            try:await self._automatic_claim(game,SteamNetwork(self.store.settings()),retry=True)
+            except Exception as exc:
+                self.store.auto_claim_record(key,game['appid'],'app',game['appid'],'failed',f'重试异常：{type(exc).__name__}')
+        self.review_tasks[key]=asyncio.create_task(runner(),name='steam-review-retry')
+        return json_response({'ok':True,'notice':'已启动重新核验与免费领取，请在待处理区刷新结果'})
+
+    async def web_review_resolve(self):
+        body=await request.json(default={})
+        return json_response(self.store.auto_claim_resolve(body.get('key')))
+
+    async def web_review_ai(self):
+        body=await request.json(default={});key=body.get('key')
+        row=self.store.auto_claim_get(key);game=self.store.get_game(key)
+        if not row or not game or row['status'] not in ('failed','submitted'):
+            raise ValueError('此项目不需要 AI 排障')
+        if key in self.review_tasks and not self.review_tasks[key].done():
+            raise ValueError('任务正在处理')
+        config=self.ai_config.effective()
+        if not config.get('api_key'):
+            raise ValueError('请先在 B站高级选项配置 AI API Key')
+        if row.get('ai_note'):
+            raise ValueError('这个失败项已经申请过一次 AI 分析，重新领取后可再次分析')
+        async def analyze():
+            import aiohttp
+            from .steam_freebies.bilibili import PROVIDERS
+            provider=str(config.get('provider') or 'openai').lower()
+            endpoint=PROVIDERS.get(provider)
+            if not endpoint:
+                self.store.auto_claim_set_note(key,'不支持该 AI 服务商');return
+            # Never upload raw ASF output: it may contain bot names or sensitive diagnostics.
+            raw=str(row['result']).lower()
+            reason=('网络超时' if 'timeout' in raw or 'connect' in raw else
+                    '地区限制' if 'region' in raw or 'country' in raw else
+                    '权限拒绝' if 'denied' in raw or 'access' in raw else
+                    '无法确认永久许可证' if row['status']=='submitted' else '其他领取错误')
+            prompt=('请仅解释 Steam 免费领取的常见原因，给出最多三步排障建议。'
+                    '不猜测 SubID、不声称已永久入库，不建议绕过验证。'
+                    f'公开 AppID={game["appid"]}；模式={row["license_type"]}；错误类别={reason}。')
+            try:
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=18)) as session:
+                    async with session.post(endpoint,headers={'Authorization':'Bearer '+config['api_key']},
+                     json={'model':config.get('model') or 'gpt-4o-mini','max_tokens':220,
+                           'messages':[{'role':'user','content':prompt}]}) as response:
+                        response.raise_for_status();data=await response.json(content_type=None)
+                note=str(data['choices'][0]['message']['content'])[:450]
+            except (aiohttp.ClientError,TimeoutError,ValueError,KeyError,IndexError,TypeError):
+                note='AI 分析失败，请直接查看 Steam / ASF 记录人工处理'
+            self.store.auto_claim_set_note(key,note)
+        self.store.auto_claim_set_note(key,'AI 分析已启动，请刷新查看')
+        self.review_tasks[key]=asyncio.create_task(analyze(),name='steam-review-ai')
+        return json_response({'ok':True,'notice':'AI 排障任务已启动，仅发送公开 AppID、许可证类型和错误类别；不发送 ASF 原始输出或账号凭据'})
+
     async def process_bili_creator_claims(self, candidates):
         """Only trusted creator-origin links; prior explicit approval of Steam free package required.
 
         We never infer SubID from AppID, dynamic text or external website links.
         """
         for game in self.store.pending_bili_claims():
+            if self.store.auto_claim_get(game['key']):
+                # The unattended workflow already owns this claim attempt.
+                continue
             try:
                 await self.do_claim(game['key'])
             except Exception as exc:
@@ -313,7 +453,8 @@ class Main(Star):
             "claim_configured": bool(os.getenv('ASTR_STEAM_ASF_BOT')) or bool(self.asf_manager.settings()['bot_name']),
             "asf": self.asf_manager.status(),
             "claim_events": self.store.latest_claim_events(),
-            "disclaimer": "搜索到的候选不保证是永久入库；仅通过人工批准 SubID 的 Steam 商店候选才能调用 ASF。",
+            "auto_claims": self.store.auto_claim_overview(),
+            "disclaimer": "无人值守只尝试 Steam 免费许可证；ASF 接收不代表已永久入库。限免如需 Free-to-Keep SubID，失败后进入审核区。",
         }
 
     async def web_snapshot(self):

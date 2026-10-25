@@ -34,16 +34,22 @@ def classify_result(value):
     return 'submitted'
 
 
-async def claim_sub(subid, manager=None):
-    if type(subid) is not int or not 0 < subid <= 2_147_483_647:
-        raise ValueError('不合法的 SubID')
+async def claim_license(license_type, license_id, manager=None):
+    if license_type not in ('app', 'sub'):
+        raise ValueError('不合法的 Steam 许可证类型')
+    if type(license_id) is not int or not 0 < license_id <= 2_147_483_647:
+        raise ValueError('不合法的 Steam 许可证 ID')
     url, bot, password = config(manager)
     headers = {'Authentication':password} if password else {}
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25),headers=headers) as session:
-        async with session.post(f'{url}/Api/Command',json={'Command':f'addlicense {bot} sub/{subid}'}) as resp:
+        async with session.post(f'{url}/Api/Command',json={'Command':f'addlicense {bot} {license_type}/{license_id}'}) as resp:
             resp.raise_for_status()
             data=await resp.json(content_type=None)
     if not isinstance(data,dict): raise ValueError('ASF 响应不是 JSON 对象')
     result=str(data.get('Result') or data.get('Message') or '')[:700]
     if not data.get('Success'): raise ValueError(f'ASF 拒绝执行：{result[:180]}')
     return classify_result(result), (result or 'ASF 已接收命令，等待 Steam 许可证核验')
+
+
+async def claim_sub(subid, manager=None):
+    return await claim_license('sub', subid, manager)

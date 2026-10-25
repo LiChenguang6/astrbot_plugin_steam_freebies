@@ -222,7 +222,7 @@ async def fetch_bilibili_tips(store,ai_config=None,auth=None,network=None,corrob
         provider=(supplied.get('provider') or os.environ.get('ASTR_STEAM_AI_PROVIDER','openai')).lower()
         model=supplied.get('model') or os.environ.get('ASTR_STEAM_AI_MODEL','gpt-4o-mini')
         if ai_budget and not ai_key:errors.append('AI 已启用但未配置 Key；本轮不调用 AI');ai_budget=0
-        for tip,origin in raw[:24]:
+        for tip,origin in raw[:36]:
             ident=tip['ref']
             if ident in seen or (not preview and store.bili_seen(ident)):continue
             seen.add(ident)
@@ -254,7 +254,10 @@ async def fetch_bilibili_tips(store,ai_config=None,auth=None,network=None,corrob
                     errors.append('AI 识别失败：本轮保守跳过该条，避免误推送')
                     continue
             # Bound Steam queries; only officially validated game links may be emitted.
-            for link in links[:2]:
+            if len(links) >= 30:
+                report.append({'kind':'source','name':tip['name'][:90],
+                               'detail':'本条最多检测 30 个 Steam AppID，若更多请拆分动态', 'url':tip['url']})
+            for link in links:
                 appid=int(link.split('/app/')[1].split('/')[0])
                 state,reason=await verify_steam(session,appid,network)
                 corroborated=appid in (corroborated_appids or set())
@@ -266,12 +269,13 @@ async def fetch_bilibili_tips(store,ai_config=None,auth=None,network=None,corrob
                     continue
                 event={'key':f'bilibili:{origin}:{ident}:{appid}','name':tip['name'][:180],
                        'kind':'bilibili_tip','source':'Bilibili 关注 UP' if origin=='creator' else 'Bilibili 搜索 · 严格核验',
-                       'appid':appid,'url':link,'steam_url':link,'bili_source_url':tip['url'],'bili_origin':origin,
+                       'appid':appid,'url':link,'steam_url':link,'bili_source_url':tip['url'],'bili_origin':origin, 'steam_state':state,
                        'original_price':'Steam 当前免费' if state=='free' else 'Steam 100% 折扣',
                        'end_date':'','confidence':detail+('；已通过双来源筛选，仍需核实永久许可证' if origin=='search' else '；订阅 UP 可信来源，非入库凭证')}
                 result.append(event)
                 report.append({'kind':'eligible','name':tip['name'][:90],'detail':detail,'url':tip['url'],'steam_url':link})
-                if not preview:store.mark_bili_seen(ident)
-                if len(result)>=12:break
-            if len(result)>=12:break
+                if len(result)>=72:break
+            if not preview and any(r['key'].startswith(f'bilibili:{origin}:{ident}:') for r in result):
+                store.mark_bili_seen(ident)
+            if len(result)>=72:break
     return result,errors

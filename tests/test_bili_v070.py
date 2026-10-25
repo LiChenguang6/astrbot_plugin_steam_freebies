@@ -64,9 +64,9 @@ def test_v066_migration_store_push_source_gates_and_both_links(tmp_path):
     target=db.targets()[0]['id']
     assert [x['key'] for x in db.pending_pushes(target)]==['bili:creator:1']
     db.update_settings({'bili_push_search_verified':True})
-    assert {x['key'] for x in db.pending_pushes(target)}=={'bili:creator:1','bili:search:2'}
+    assert {x['key'] for x in db.pending_pushes(target)}=={'bili:creator:1'}  # Search is unconfirmed until a license claim is verified
     db.update_settings({'bili_push_creators':False})
-    assert [x['key'] for x in db.pending_pushes(target)]==['bili:search:2']
+    assert db.pending_pushes(target)==[]  # AI/video evidence cannot stand in for license confirmation
     db.db.close()
     db=Store(tmp_path/'sqlite.db')
     assert db.get_game('bili:creator:1')['bili_source_url'].startswith('https://t.bilibili.com/')

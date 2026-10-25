@@ -24,7 +24,7 @@ def steam_links(text):
             link = f'https://store.steampowered.com/app/{value}/'
             if link not in results:
                 results.append(link)
-    return results[:5]
+    return results[:30]
 
 
 def linked_subids(text):
