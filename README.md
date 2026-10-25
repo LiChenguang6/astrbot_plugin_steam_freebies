@@ -1,6 +1,6 @@
 # Steam 喜加一监控 · AstrBot 插件
 
-> **v0.2.0（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
+> **v0.3.0（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
 
 独立插件，适用于 AstrBot ≥ 4.29.1 / Python ≥ 3.12；支持 AstrBot 的 OneBot（如 NapCat）与 QQ 官方适配器。借鉴 [原项目](https://github.com/LiChenguang6/astrbot_plugin_steam_status_monitor) 的插件面板架构，**不影响该项目**。
 
@@ -29,11 +29,25 @@
 
 群聊命令：`/喜加一` 查看最近 5 条线索；`/喜加一绑定` 绑定当前群；`/喜加一解绑` 暂停当前群的推送。
 
+## ASF 一键安装与下载加速（无需手动下载 ZIP）
+
+安装这个 AstrBot 插件后，在 **插件详情 → steam-freebies 管理页面 → 内置 ASF**：
+
+1. 「ASF 安装包下载方式」建议保持 **自动加速**（默认）；也可选「只用加速镜像」或「只用 GitHub 官方源」，改动后先点 **保存 ASF 设置**。
+2. 点击 **安装 / 更新 ASF**，插件自动识别操作系统和 CPU，下载官方 ASF 安装包，显示当前下载源和收到的 MB；若镜像连接或校验失败，自动尝试下一来源。
+3. 安装完毕点击 **启动 ASF**。安装/启动在运行 AstrBot 的服务器上完成；无需先在自己的电脑上下载 ZIP 再上传。
+
+自动加速使用公开的 GH-Proxy（`gh-proxy.org`）与 GHProxy（`ghproxy.net`），随后回退 GitHub 官方下载。这两个加速节点属于**第三方中转**，会接触安装包请求，无法保证速度与可用性；下载内容必须经过 **ASF 官方 SHA256 校验**，校验失败拒绝安装。**只用镜像**模式不再尝试 GitHub 的大文件下载。
+
+校验元数据优先取 ASF 官方 GitHub Release API；如果 GitHub API 不可达，插件内置 ASF **6.3.10.6** 官方发布的各平台 SHA256 和精确版本下载路径作为备用。内置固定版本不会自动更新，恢复官方 API 后将恢复检查最新版。两者都不可验证时则拒绝安装。安装后的 ASF 本体和账号数据位于 AstrBot 私有数据目录，**不会上传到 GitHub，也无需把大型二进制提交到你的源码仓库**。
+
+**注意：** 一键安装 ≠ Steam 账号自动登录。ASF 首次授权仍需你通过本地 ASF-ui/Steam Guard 完成。AstrBot 在 Docker 里时，下载和 ASF 均运行在容器内，IPC 只能从同一容器访问；需保证持久化数据卷。服务器完全无法访问任何镜像或 GitHub 时，网络限制仍然存在，插件无法保证成功下载。
+
 ## 插件内置管理 ASF（可选）
 
 **ASF 是在 AstrBot 所在服务器上运行的另一独立进程，不是 Python 库，也不会一起提交到 GitHub 仓库。** 本插件让你从管理页面自动安装/启动/停止它，进程和 Steam 账号配置仍由 ASF 自身维护。
 
-1. 打开 WebUI → **内置 ASF** → 点击 **安装 / 更新 ASF**。程序会在后台从官方 GitHub Release 下载匹配当前系统的独立可执行版本，并验证发布页所附的 SHA256；下载失败或未提供 SHA256 会拒绝安装。
+1. 打开 WebUI → **内置 ASF** → 选择下载模式（默认自动加速）→ 点击 **安装 / 更新 ASF**。安装器自动选择官方 Release 或经过 SHA256 校验的加速中转，网络不通可使用固定版本的官方校验清单。
 2. 安装完成后点击 **启动 ASF**。运行中不能覆盖安装包；错误与 ASF 本地日志位于 `data/plugin_data/astrbot_plugin_steam_freebies/asf-manager/` 下（实际位置以 AstrBot 数据目录为准）。
 3. 可以在面板中填写 **ASF Bot 名称** 和 **Steam 登录名**，点击 **创建本地 Bot 配置**。该配置默认关闭自动挂卡（`FarmingPreferences: 1`），不含密码且默认 `Enabled: false`；再使用 ASF-ui 完成密码/Steam Guard 和启用。此操作不会覆盖已有 Bot 配置。
 4. ASF 默认 IPC 地址为 `http://127.0.0.1:1242`，首次托管安装生成随机 IPC 密码，只保存在插件私有数据目录的 `runtime/config/ASF.json` 内。**ASF 账号密码及 Steam Guard 请使用 ASF 自身的受信配置功能**，本插件面板不要求 Steam 密码。

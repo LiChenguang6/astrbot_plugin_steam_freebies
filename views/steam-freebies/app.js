@@ -77,12 +77,18 @@ function showASF(){
   $('asf-badge').className=`pill ${a.running?'ok':a.installed?'warn':'neutral'}`;
   const status=[`平台包：${a.variant||'未知'}`,`安装状态：${a.install_state||'未操作'}`];
   if(a.version)status.push(`版本：${a.version}`);
+  if(a.metadata_source)status.push(`校验数据：${a.metadata_source}`);
+  if(a.download_source)status.push(`下载源：${a.download_source}`);
+  if(a.download_bytes && ['downloading','verifying','extracting'].includes(a.install_state))
+    status.push(`已接收：${(a.download_bytes / 1024 / 1024).toFixed(1)} MB` +
+                (a.download_total?` / ${(a.download_total / 1024 / 1024).toFixed(1)} MB`:''));
   if(a.error)status.push(`异常：${a.error}`);
   $('asf-status').textContent=status.join(' · ');
   $('start-asf').disabled=!a.installed||a.running;
   $('stop-asf').disabled=!a.running;
-  $('install-asf').disabled=['downloading','verifying'].includes(a.install_state)||a.running;
+  $('install-asf').disabled=['downloading','verifying','extracting'].includes(a.install_state)||a.running;
   $('asf-mode').value=a.settings?.mode||'external';
+  $('asf-download-mode').value=a.settings?.download_mode||'auto';
   $('asf-bot').value=a.settings?.bot_name||'';
   $('asf-boot').checked=Boolean(a.settings?.start_on_boot);
 }
@@ -104,7 +110,7 @@ function render(){
   $('push-key').checked=data.settings.push_third_party;
   $('push-result').checked=data.settings.push_claim_results;
   $('autoclaim').checked=data.settings.auto_claim_enabled;
-  showGames(); showClaimHistory(); showTargets(); showASF();
+  showGames(); showClaimHistory(); showTargets(); showASF(); syncAsfProgress();
 }
 async function reload(){
   if(!bridge)return;
@@ -127,8 +133,8 @@ for(const button of document.querySelectorAll('[data-filter]')){
 }
 $('search').addEventListener('input',ev=>{search=ev.target.value.trim().toLowerCase();showGames();});
 $('install-asf').addEventListener('click',()=>{
-  if(confirm('从 ArchiSteamFarm 官方 GitHub Release 下载匹配本机平台的安装包，验证哈希并安装到 AstrBot 私有数据目录？'))
-    apiAction('asf/install',{},'已开始下载，稍后点击「刷新」查看下载及验证状态。');
+  if(confirm('自动下载 ASF 并安装到 AstrBot 私有数据目录？将按当前设置使用加速镜像或官方源，并且严格核验官方 SHA256。'))
+    apiAction('asf/install',{},'已开始下载。页面会自动更新下载源及校验进度。');
 });
 $('start-asf').addEventListener('click',()=>apiAction('asf/start',{},'托管 ASF 已启动。'));
 $('stop-asf').addEventListener('click',()=>apiAction('asf/stop',{},'托管 ASF 已停止。'));
@@ -141,10 +147,19 @@ $('create-bot').addEventListener('click',()=>{
   $('steam-login').value='';
 });
 $('asf-save').addEventListener('click',()=>apiAction('asf/settings',{
-  mode:$('asf-mode').value,bot_name:$('asf-bot').value.trim(),start_on_boot:$('asf-boot').checked
+  mode:$('asf-mode').value,bot_name:$('asf-bot').value.trim(),start_on_boot:$('asf-boot').checked,
+  download_mode:$('asf-download-mode').value
 },'ASF 连接设置已保存。'));
 const navLinks=[...document.querySelectorAll('.sidebar nav a')];
 for(const link of navLinks)link.addEventListener('click',()=>{for(const x of navLinks)x.classList.toggle('active',x===link);});
 $('clock').textContent=new Date().toLocaleDateString('zh-CN',{year:'numeric',month:'long',day:'numeric'});
 if(bridge)bridge.ready().then(reload).catch(err=>toast('面板桥接连接失败：'+err.message));
 else toast('请从已登录的 AstrBot 插件详情页打开此控制台。');
+
+// Only poll while managed ASF is actively downloading; avoid unnecessary dashboard traffic.
+let asfPoll = null;
+function syncAsfProgress(){
+  const active = ['downloading','verifying','extracting'].includes(data?.asf?.install_state);
+  if(active && asfPoll===null)asfPoll=setInterval(reload,2500);
+  if(!active && asfPoll!==null){clearInterval(asfPoll);asfPoll=null;}
+}

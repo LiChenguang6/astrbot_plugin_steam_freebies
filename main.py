@@ -224,7 +224,7 @@ class Main(Star):
 
     async def web_asf_install(self):
         self.asf_manager.install()
-        return json_response({'ok': True, 'notice':'后台已开始下载官方 ASF，刷新查看状态'})
+        return json_response({'ok': True, 'notice':'已开始一键安装 ASF，将自动尝试下载加速源并校验官方 SHA256'})
 
     async def web_asf_start(self):
         await self.asf_manager.start()

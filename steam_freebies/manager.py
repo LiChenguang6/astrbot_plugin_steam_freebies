@@ -13,6 +13,8 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
+from .asf_release import PINNED_VERSION, PINNED_SHA256, DOWNLOAD_RELAYS
+
 import aiohttp
 
 RELEASE_URL = 'https://api.github.com/repos/JustArchiNET/ArchiSteamFarm/releases/latest'
@@ -72,10 +74,14 @@ class ManagedASF:
         self.install_state = 'idle'
         self.last_error = ''
         self.version = ''
+        self.download_source = ''
+        self.download_bytes = 0
+        self.download_total = 0
+        self.metadata_source = ''
         self._lock = asyncio.Lock()
 
     def settings(self):
-        default = {'mode': 'external', 'bot_name': '', 'start_on_boot': False}
+        default = {'mode': 'external', 'bot_name': '', 'start_on_boot': False, 'download_mode': 'auto'}
         if self.settings_path.exists():
             try:
                 obj = json.loads(self.settings_path.read_text(encoding='utf-8'))
@@ -85,13 +91,15 @@ class ManagedASF:
         return default
 
     def save_settings(self, values):
-        if not isinstance(values, dict) or set(values) - {'mode','bot_name','start_on_boot'}:
+        if not isinstance(values, dict) or set(values) - {'mode','bot_name','start_on_boot','download_mode'}:
             raise ValueError('不支持的 ASF 设置')
         for key, value in values.items():
             if key == 'mode' and value not in ('external','managed'):
                 raise ValueError('ASF 模式只能选 external 或 managed')
             if key == 'bot_name' and value and not BOT_RE.fullmatch(value):
                 raise ValueError('ASF Bot 名称只允许英文、数字、_、-，最长64位')
+            if key == 'download_mode' and value not in ('auto', 'mirror', 'official'):
+                raise ValueError('下载模式只能选自动加速、只用镜像或只用官方')
             if key == 'start_on_boot' and type(value) is not bool:
                 raise ValueError('自动启动必须是布尔值')
         saved = {**self.settings(),**values}
@@ -116,6 +124,8 @@ class ManagedASF:
         return {'installed':self.installed(),'running':self.running(), 'install_state':self.install_state,
                 'error':self.last_error, 'settings':self.settings(), 'version':self.version,
                 'variant': archive_variant() if self._supported() else 'unsupported',
+                'download_source': self.download_source, 'download_bytes': self.download_bytes,
+                'download_total': self.download_total, 'metadata_source': self.metadata_source,
                 'ipc_url': 'http://127.0.0.1:1242' if self.running() else ''}
 
     def _supported(self):
@@ -131,80 +141,157 @@ class ManagedASF:
             raise ValueError('请先停止已运行的 ASF，再更新安装')
         self.install_state = 'downloading'
         self.last_error = ''
+        self.download_source = ''
+        self.download_bytes = 0
+        self.download_total = 0
         self.install_task = asyncio.create_task(self._install_job(), name='steam-freebies-asf-install')
+
+    @staticmethod
+    def download_urls(official_url, mode):
+        """Known relay presets only. No arbitrary admin-provided download URL/SSRF."""
+        prefix = 'https://github.com/JustArchiNET/ArchiSteamFarm/releases/download/'
+        if not official_url.startswith(prefix):
+            raise ValueError('安装包地址不是 ASF 官方 Release')
+        if mode not in ('auto', 'mirror', 'official'):
+            raise ValueError('下载模式不合法')
+        mirrors = [(name, base + official_url) for name, base in DOWNLOAD_RELAYS]
+        if mode == 'mirror':
+            return mirrors
+        if mode == 'official':
+            return [('GitHub 官方', official_url)]
+        return mirrors + [('GitHub 官方', official_url)]
+
+    @staticmethod
+    def official_asset(release, asset_name):
+        if not isinstance(release, dict) or release.get('prerelease') or release.get('draft'):
+            raise ValueError('ASF 官方元数据无效或不是稳定版')
+        version = release.get('tag_name')
+        if not isinstance(version, str) or not re.fullmatch(r'[0-9]+(?:\.[0-9]+){2,5}', version):
+            raise ValueError('ASF Release 版本号不符合预期')
+        asset = next((a for a in release.get('assets', []) if a.get('name') == asset_name), None)
+        if not isinstance(asset, dict):
+            raise ValueError('官方发布页缺少对应系统架构的安装包')
+        digest = str(asset.get('digest') or '')
+        if not re.fullmatch(r'sha256:[0-9a-fA-F]{64}', digest):
+            raise ValueError('ASF 官方 Release 未提供有效 SHA256')
+        url = f'https://github.com/JustArchiNET/ArchiSteamFarm/releases/download/{version}/{asset_name}'
+        if asset.get('browser_download_url') != url:
+            raise ValueError('ASF 官方 Release 安装包地址不符合预期')
+        size = asset.get('size')
+        if type(size) is not int or not 1 <= size <= 80 * 1024 * 1024:
+            raise ValueError('ASF 官方安装包大小异常')
+        return version, url, digest[7:].lower(), size
+
+    async def _release_metadata(self, session, asset_name):
+        """Prefer latest release; fall back to audited pinned hash on API network failure."""
+        try:
+            async with session.get(RELEASE_URL, timeout=aiohttp.ClientTimeout(total=12)) as resp:
+                resp.raise_for_status()
+                release = await resp.json(content_type=None)
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
+            digest = PINNED_SHA256.get(asset_name)
+            if not digest:
+                raise ValueError('此平台没有离线可验证的 ASF 安装包')
+            version = PINNED_VERSION
+            url = f'https://github.com/JustArchiNET/ArchiSteamFarm/releases/download/{version}/{asset_name}'
+            self.metadata_source = f'固定官方校验清单 {version}（GitHub API 不可达）'
+            return version, url, digest, 0
+        self.metadata_source = 'GitHub 官方最新版本元数据'
+        return self.official_asset(release, asset_name)
+
+    async def _download_verified(self, session, url, digest, expected_size, mode):
+        errors = []
+        for provider, download_url in self.download_urls(url, mode):
+            self.download_source = provider
+            self.download_bytes = 0
+            self.download_total = expected_size
+            self.install_state = 'downloading'
+            try:
+                async with session.get(download_url, timeout=aiohttp.ClientTimeout(total=75)) as resp:
+                    resp.raise_for_status()
+                    if resp.url.scheme != 'https':
+                        raise ValueError('拒绝非 HTTPS 下载跳转')
+                    declared = int(resp.headers.get('Content-Length') or 0)
+                    if declared > 80 * 1024 * 1024:
+                        raise ValueError('下载内容超过 80MB 限制')
+                    content_type = resp.headers.get('Content-Type', '').lower()
+                    if content_type.startswith(('text/html', 'text/plain')):
+                        raise ValueError('镜像返回网页而非 ASF ZIP 压缩包')
+                    parts = []
+                    running_hash = hashlib.sha256()
+                    async for chunk in resp.content.iter_chunked(1024 * 1024):
+                        self.download_bytes += len(chunk)
+                        if self.download_bytes > 80 * 1024 * 1024:
+                            raise ValueError('下载内容超过 80MB 限制')
+                        running_hash.update(chunk)
+                        parts.append(chunk)
+                if not self.download_bytes:
+                    raise ValueError('下载为空')
+                self.install_state = 'verifying'
+                if running_hash.hexdigest().lower() != digest.lower():
+                    raise ValueError('SHA256 校验不匹配，拒绝该下载源')
+                if expected_size and self.download_bytes != expected_size:
+                    raise ValueError('安装包大小与官方元数据不符')
+                return b''.join(parts)
+            except asyncio.CancelledError:
+                raise
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError) as exc:
+                errors.append(f'{provider}: {type(exc).__name__}: {str(exc)[:100]}')
+        raise RuntimeError('ASF 所有下载源均失败；' + '；'.join(errors))
 
     async def _install_job(self):
         staging = None
         try:
             asset_name = archive_variant()
-            timeout = aiohttp.ClientTimeout(total=180)
-            headers = {'User-Agent':'AstrBot-Steam-Freebies/0.2', 'Accept':'application/vnd.github+json'}
+            headers = {'User-Agent':'AstrBot-Steam-Freebies/0.3', 'Accept':'application/vnd.github+json'}
+            timeout = aiohttp.ClientTimeout(total=90)
             async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-                async with session.get(RELEASE_URL) as resp:
-                    resp.raise_for_status()
-                    release = await resp.json(content_type=None)
-                if release.get('prerelease') or release.get('draft'):
-                    raise ValueError('只允许安装 ASF 稳定版')
-                asset = next((x for x in release.get('assets',[]) if x.get('name') == asset_name),None)
-                if not asset:
-                    raise ValueError('官方发布页缺少对应平台安装包')
-                digest = str(asset.get('digest') or '')
-                if not digest.startswith('sha256:'):
-                    raise ValueError('官方 GitHub 发布信息缺少 SHA256，不自动安装')
-                url = asset.get('browser_download_url','')
-                parsed = urlparse(url)
-                if parsed.scheme != 'https' or parsed.netloc != 'github.com' or not parsed.path.startswith('/JustArchiNET/ArchiSteamFarm/releases/download/'):
-                    raise ValueError('发布资源地址不可信')
-                if int(asset.get('size',0)) > 80*1024*1024:
-                    raise ValueError('ASF 压缩包过大')
-                async with session.get(url) as resp:
-                    resp.raise_for_status()
-                    chunks=[]
-                    count=0
-                    async for chunk in resp.content.iter_chunked(1024*1024):
-                        count += len(chunk)
-                        if count > 80*1024*1024:
-                            raise ValueError('下载文件超过80MB限制')
-                        chunks.append(chunk)
-                archive = b''.join(chunks)
-            self.install_state='verifying'
-            staging=Path(tempfile.mkdtemp(prefix='asf-stage-',dir=self.root))
-            verify_and_extract(archive,digest[7:],staging)
+                version, url, digest, size = await self._release_metadata(session, asset_name)
+                archive = await self._download_verified(
+                    session, url, digest, size, self.settings()['download_mode'])
+            self.install_state = 'extracting'
+            staging = Path(tempfile.mkdtemp(prefix='asf-stage-', dir=self.root))
+            verify_and_extract(archive, digest, staging)
             config_dir = staging / 'config'
             config_dir.mkdir(exist_ok=True)
-            # New installs generate their own IPC auth token, never checked into GitHub.
             previous = self.path / 'config'
             if previous.is_dir():
-                shutil.copytree(previous,config_dir,dirs_exist_ok=True)
+                shutil.copytree(previous, config_dir, dirs_exist_ok=True)
             else:
-                ipc_secret=secrets.token_urlsafe(40)
-                (config_dir/'ASF.json').write_text(json.dumps({
-                    'IPC':True,'IPCPassword':ipc_secret,'OptimizationMode':1,
-                    'UpdatePeriod':0,'Headless':True
-                },indent=2),encoding='utf-8')
+                ipc_secret = secrets.token_urlsafe(40)
+                (config_dir / 'ASF.json').write_text(json.dumps({
+                    'IPC': True, 'IPCPassword': ipc_secret, 'OptimizationMode': 1,
+                    'UpdatePeriod': 0, 'Headless': True
+                }, indent=2), encoding='utf-8')
             if os.name != 'nt':
-                for p in config_dir.iterdir():
-                    if p.is_file(): p.chmod(0o600)
+                for config in config_dir.iterdir():
+                    if config.is_file():
+                        config.chmod(0o600)
             old = self.root / 'runtime-previous'
-            if old.exists(): shutil.rmtree(old)
-            if self.path.exists(): self.path.rename(old)
-            try: staging.rename(self.path)
+            if old.exists():
+                shutil.rmtree(old)
+            if self.path.exists():
+                self.path.rename(old)
+            try:
+                staging.rename(self.path)
             except Exception:
-                if old.exists() and not self.path.exists(): old.rename(self.path)
+                if old.exists() and not self.path.exists():
+                    old.rename(self.path)
                 raise
             staging = None
-            if old.exists(): shutil.rmtree(old)
-            self.version = str(release.get('tag_name') or '')[:40]
-            self.install_state='installed'
+            if old.exists():
+                shutil.rmtree(old)
+            self.version = version
+            self.install_state = 'installed'
         except asyncio.CancelledError:
-            self.install_state='cancelled'
+            self.install_state = 'cancelled'
             raise
         except Exception as exc:
-            self.install_state='error'
-            self.last_error=f'{type(exc).__name__}: {str(exc)[:200]}'
+            self.install_state = 'error'
+            self.last_error = f'{type(exc).__name__}: {str(exc)[:600]}'
         finally:
             if staging is not None:
-                shutil.rmtree(staging,ignore_errors=True)
+                shutil.rmtree(staging, ignore_errors=True)
 
     async def start(self):
         async with self._lock:
