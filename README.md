@@ -1,6 +1,6 @@
 # Steam 喜加一监控 · AstrBot 插件
 
-> **v0.3.2（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
+> **v0.3.3（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
 
 独立插件，适用于 AstrBot ≥ 4.29.1 / Python ≥ 3.12；支持 AstrBot 的 OneBot（如 NapCat）与 QQ 官方适配器。借鉴 [原项目](https://github.com/LiChenguang6/astrbot_plugin_steam_status_monitor) 的插件面板架构，**不影响该项目**。
 
@@ -136,3 +136,22 @@ ASF 官方资料：[项目](https://github.com/JustArchiNET/ArchiSteamFarm) · [
 - 群晖容器如果提示原生库缺失，需要修改 **AstrBot Docker 容器运行镜像**，仅仅在 DSM 宿主机安装依赖并不能让容器里获得这些库。
 - 不要随意把 ASF IPC 端口映射到公网；账号授权仍在 ASF 管理端完成。
 - 更新插件无需重新安装 ASF，已有的 ASF 二进制、Bot 配置和数据库位于 AstrBot 私有数据目录，不随代码更新被覆盖。
+
+## v0.3.3：群晖 NAS 4GB 内存，ASF 一键切换高性能 / 低资源兼容
+
+在插件 WebUI → **托管 ASF → ASF 运行模式**，有两个单选按钮：
+
+| 模式 | 技术设置 | 适用条件 |
+| --- | --- | --- |
+| 高性能 | ASF `OptimizationMode=0`，仅 ASF 子进程使用标准 .NET 国际化模式（`DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=0`）| 容器已安装 ICU，想保留完整国际化行为 |
+| 低资源兼容（默认） | ASF `OptimizationMode=1`，仅 ASF 子进程环境变量 `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1`、`DOTNET_SYSTEM_GLOBALIZATION_PREDEFINED_CULTURES_ONLY=0` | 群晖 Docker 容器缺少 libicu，无法正常启动 |
+
+**操作：** 选模式 →「保存 ASF 设置」→ 如正在运行先「停止 ASF」→「启动 ASF」。不必重新下载 ASF。切换只修改 ASF 私有目录 `config/ASF.json` 的 `OptimizationMode`，保留其他属性及本地 IPC 密码；兼容模式只修改 ASF 子进程的环境变量，不改变 AstrBot / 群晖宿主机环境，也不上传任何密码。
+
+`.NET` invariant 兼容模式是微软支持的绕过缺失 ICU 的技术选项，但**不保证所有 Steam/ASF 工作流都正常**。语言排序、非英文区域行为可能发生变化。若出现其他本地库或连接错误，仍需调整容器镜像。`MinMemoryUsage` 只是 ASF 的执行并发策略，ASF 官方说明其牺牲较多性能但节省内存不一定明显；高性能模式通常更适合已安装完整依赖的普通机器。
+
+**按需启动：** 在「需要领取时自动启动 ASF」启用时，管理员批准的 SubID 触发实际领取前自动启动托管 ASF，领取结束后按设置等待 5 / 10 / 15 / 30 分钟，无后续领取任务则自动停止。手动点击启动用于首次账号配置，不会马上被定时器结束；已有进程不会重复启动。这个选项不自动识别 SubID，不为第三方赠 Key 活动领取 Key。已登录的 Steam Bot 重新启动时仍可能需要 Steam 验证，无法保证全程无人值守。
+
+**NAS 内存:** 面板能够显示 Linux `/proc` 中 ASF 进程的实际常驻物理内存（RSS），不是预测值。缓存页通常可回收，但不要把 NAS 的缓存值全部当成可用内存。对 4GB 机器，建议保持足够的系统余量，并先尝试低资源兼容模式。
+
+资料： [.NET Globalization Invariant Mode](https://learn.microsoft.com/en-us/dotnet/core/runtime-config/globalization) · [ASF OptimizationMode](https://github.com/JustArchiNET/ArchiSteamFarm/wiki/Configuration#optimizationmode)

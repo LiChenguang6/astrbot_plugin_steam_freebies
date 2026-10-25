@@ -162,11 +162,17 @@ class Main(Star):
             if not row or row["kind"] != "steam_candidate" or not row["approved_subid"]:
                 raise ValueError("先在面板为 Steam 商店活动人工确认并批准正确 SubID")
             subid = int(row["approved_subid"])
-            # No automatic repeated attempts after a recorded attempt; manually triggering can retry.
+            # The on-demand manager starts ASF only for an actual approved free SubID.
+            # Third-party Key promotions never reach this route.
+            prepared = False
             try:
+                prepared = await self.asf_manager.prepare_for_claim()
                 status, result = await claim_sub(subid,self.asf_manager)
             except Exception as exc:
                 status, result = 'failed', f'{type(exc).__name__}: {str(exc)[:160]}'
+            finally:
+                if prepared:
+                    self.asf_manager.finish_claim()
             self.store.claim_record(key, subid, status, result)
         # Broadcast after releasing claim_lock, avoiding blocking the next ASF command.
         await self.push_claim_events()
@@ -244,7 +250,8 @@ class Main(Star):
 
     async def web_asf_settings(self):
         body = await request.json(default={})
-        return json_response({'settings':self.asf_manager.save_settings(body)})
+        cfg = self.asf_manager.save_settings(body)
+        return json_response({'settings':cfg, 'notice': 'ASF 设置已保存。如 ASF 正在运行，更改性能模式需要先停止并重新启动 ASF 才会生效。'})
 
     async def web_asf_bot(self):
         body=await request.json(default={})

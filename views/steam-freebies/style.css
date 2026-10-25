@@ -9,3 +9,13 @@
 .dialog-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:20px}
 .asf-operation{margin:12px 0;padding:12px 14px;border-radius:10px;background:#12344c;border:1px solid #3277a0;color:#b7e4ff;white-space:pre-wrap;overflow-wrap:anywhere}
 .asf-operation.error{background:#3d2425;border-color:#a75656;color:#ffd8d2}
+
+/* ASF performance and compatibility modes (accessible native radio controls). */
+.asf-profile-picker{margin:18px 0}.asf-profile-picker h3{margin:5px 0 6px}
+.profile-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:16px 0 8px}
+.profile-option{display:flex;align-items:flex-start;gap:12px;padding:17px;border:1px solid var(--line);border-radius:12px;background:rgba(100,135,180,.07);cursor:pointer;transition:border-color .2s,background .2s}
+.profile-option:has(input:checked){border-color:#5bbde9;background:rgba(91,189,233,.12)}
+.profile-option input{margin:5px 0 0;accent-color:#5bbde9;flex-shrink:0}
+.profile-option strong{display:block;font-size:15px;margin-bottom:6px}
+.profile-option small{display:block;color:var(--muted);line-height:1.6}
+@media(max-width:720px){.profile-grid{grid-template-columns:1fr}}

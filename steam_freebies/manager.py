@@ -103,6 +103,9 @@ class ManagedASF:
         self.log_handle = None
         self.start_error = ''
         self.last_exit_code = None
+        self.running_profile = ''
+        self._active_claims = 0
+        self._idle_task = None
         self.install_task = None
         self.state_path = self.root / 'install-state.json'
         persisted = self._load_install_state()
@@ -150,7 +153,8 @@ class ManagedASF:
                 'free_mb':free_mb, 'writable':os.access(self.root, os.W_OK | os.X_OK)}
 
     def settings(self):
-        default = {'mode': 'external', 'bot_name': '', 'start_on_boot': False, 'download_mode': 'auto'}
+        default = {'mode': 'external', 'bot_name': '', 'start_on_boot': False, 'download_mode': 'auto',
+                   'profile': 'compatible', 'on_demand': True, 'idle_minutes': 10}
         if self.settings_path.exists():
             try:
                 obj = json.loads(self.settings_path.read_text(encoding='utf-8'))
@@ -160,7 +164,7 @@ class ManagedASF:
         return default
 
     def save_settings(self, values):
-        if not isinstance(values, dict) or set(values) - {'mode','bot_name','start_on_boot','download_mode'}:
+        if not isinstance(values, dict) or set(values) - {'mode','bot_name','start_on_boot','download_mode','profile','on_demand','idle_minutes'}:
             raise ValueError('不支持的 ASF 设置')
         for key, value in values.items():
             if key == 'mode' and value not in ('external','managed'):
@@ -171,6 +175,12 @@ class ManagedASF:
                 raise ValueError('下载模式只能选自动加速、只用镜像或只用官方')
             if key == 'start_on_boot' and type(value) is not bool:
                 raise ValueError('自动启动必须是布尔值')
+            if key == 'profile' and value not in ('performance', 'compatible'):
+                raise ValueError('ASF 运行模式只能选高性能或低资源兼容')
+            if key == 'on_demand' and type(value) is not bool:
+                raise ValueError('按需启动必须是布尔值')
+            if key == 'idle_minutes' and (type(value) is not int or value not in (5, 10, 15, 30)):
+                raise ValueError('空闲停止时间只能设置为 5、10、15 或 30 分钟')
         saved = {**self.settings(),**values}
         if saved['mode'] == 'managed' and not self.installed():
             raise ValueError('请先通过官方发布包安装托管 ASF')
@@ -178,6 +188,13 @@ class ManagedASF:
         temp.write_text(json.dumps(saved,ensure_ascii=False,indent=2),encoding='utf-8')
         if os.name != 'nt': temp.chmod(0o600)
         temp.replace(self.settings_path)
+        # Apply on-demand timer policy immediately; child runtime profile still needs restart.
+        if not saved['on_demand'] or saved['mode'] != 'managed':
+            self._cancel_idle_timer()
+        elif self._idle_task is not None and not self._idle_task.done() and not self._active_claims:
+            self._cancel_idle_timer()
+            if self.running():
+                self._idle_task = asyncio.create_task(self._stop_when_idle(saved['idle_minutes']))
         return saved
 
     def binary(self):
@@ -189,8 +206,104 @@ class ManagedASF:
     def running(self):
         return self.process is not None and self.process.returncode is None
 
+    def rss_mb(self):
+        """Process resident memory on Linux, never includes credentials."""
+        if not self.running():
+            return None
+        pid = getattr(self.process, 'pid', None)
+        if not pid or os.name != 'posix':
+            return None
+        try:
+            for line in Path(f'/proc/{pid}/status').read_text(encoding='ascii').splitlines():
+                if line.startswith('VmRSS:'):
+                    return round(int(line.split()[1]) / 1024, 1)
+        except (OSError, ValueError, IndexError):
+            pass
+        return None
+
+    def _runtime_environment(self, profile):
+        """Only applies .NET settings to the ASF child process; never mutates AstrBot environment."""
+        env = os.environ.copy()
+        if profile == 'compatible':
+            # Microsoft's supported escape hatch for Linux containers without libicu.
+            env['DOTNET_SYSTEM_GLOBALIZATION_INVARIANT'] = '1'
+            env['DOTNET_SYSTEM_GLOBALIZATION_PREDEFINED_CULTURES_ONLY'] = '0'
+        elif profile == 'performance':
+            env['DOTNET_SYSTEM_GLOBALIZATION_INVARIANT'] = '0'
+            env.pop('DOTNET_SYSTEM_GLOBALIZATION_PREDEFINED_CULTURES_ONLY', None)
+        else:
+            raise ValueError('不支持的 ASF 性能模式')
+        return env
+
+    def _configure_optimization(self, profile):
+        """Safely preserve all existing ASF.json keys (including the locally stored IPC password)."""
+        path = self.path / 'config' / 'ASF.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            settings = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'IPC': True}
+        except (OSError, ValueError) as exc:
+            raise ValueError('ASF.json 配置文件无法解析；为保护账号数据，未覆盖现有配置') from exc
+        if not isinstance(settings, dict):
+            raise ValueError('ASF.json 必须是 JSON 对象')
+        optimization = 1 if profile == 'compatible' else 0
+        if settings.get('OptimizationMode') == optimization:
+            return
+        settings['OptimizationMode'] = optimization
+        tmp = path.with_suffix('.json.tmp')
+        try:
+            tmp.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding='utf-8')
+            if os.name != 'nt':
+                tmp.chmod(0o600)
+            tmp.replace(path)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
+
+    async def prepare_for_claim(self):
+        """Start a managed ASF only when configured for on-demand use."""
+        settings = self.settings()
+        if settings['mode'] != 'managed':
+            return False
+        self._cancel_idle_timer()
+        self._active_claims += 1
+        try:
+            if not self.running() and settings['on_demand']:
+                await self.start()
+            elif not self.running():
+                raise RuntimeError('ASF 当前未运行；请启动 ASF 或勾选按需自动启动')
+            return True
+        except BaseException:
+            self._active_claims -= 1
+            raise
+
+    def finish_claim(self):
+        self._active_claims = max(0, self._active_claims - 1)
+        settings = self.settings()
+        if settings['mode'] == 'managed' and settings['on_demand'] and not self._active_claims and self.running():
+            self._cancel_idle_timer()
+            self._idle_task = asyncio.create_task(self._stop_when_idle(settings['idle_minutes']))
+
+    def _cancel_idle_timer(self):
+        task = self._idle_task
+        self._idle_task = None
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    async def _stop_when_idle(self, minutes):
+        try:
+            await asyncio.sleep(minutes * 60)
+            if not self._active_claims and self.running():
+                await self.stop()
+        except asyncio.CancelledError:
+            return
+        finally:
+            if self._idle_task is asyncio.current_task():
+                self._idle_task = None
+
     def status(self):
         return {'installed':self.installed(),'running':self.running(), 'install_state':self.install_state,
+                'running_profile': self.running_profile, 'rss_mb': self.rss_mb(),
+                'idle_timer_active': self._idle_task is not None and not self._idle_task.done(),
                 'error':self.last_error, 'settings':self.settings(), 'version':self.version,
                 'variant': archive_variant() if self._supported() else 'unsupported',
                 'download_source': self.download_source, 'download_bytes': self.download_bytes,
@@ -391,6 +504,8 @@ class ManagedASF:
                 raise ValueError('请先安装 ASF 官方独立版本')
             self.start_error = ''
             self.last_exit_code = None
+            selected_profile = self.settings()['profile']
+            self._configure_optimization(selected_profile)
             # Do not accidentally attach to another ASF listening on the default IPC port.
             import socket
             try:
@@ -407,9 +522,11 @@ class ManagedASF:
                 proc = await asyncio.create_subprocess_exec(
                     str(self.binary()), '--no-restart', '--process-required',
                     cwd=str(self.path), stdin=asyncio.subprocess.DEVNULL,
-                    stdout=self.log_handle, stderr=asyncio.subprocess.STDOUT
+                    stdout=self.log_handle, stderr=asyncio.subprocess.STDOUT,
+                    env=self._runtime_environment(selected_profile)
                 )
                 self.process = proc
+                self.running_profile = selected_profile
                 await asyncio.sleep(2)
                 if proc.returncode is not None:
                     self.last_exit_code = proc.returncode
@@ -441,14 +558,17 @@ class ManagedASF:
             finally:
                 if self.process is None or self.process.returncode is not None:
                     self.process = None
+                    self.running_profile = ''
                     if self.log_handle:
                         self.log_handle.close()
                         self.log_handle = None
 
     async def stop(self):
+        self._cancel_idle_timer()
         async with self._lock:
             proc=self.process
             self.process=None
+            self.running_profile = ''
             if proc and proc.returncode is None:
                 proc.terminate()
                 try: await asyncio.wait_for(proc.wait(),timeout=8)

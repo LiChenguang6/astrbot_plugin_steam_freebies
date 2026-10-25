@@ -147,6 +147,17 @@ function showASF(){
   $('asf-download-mode').value=a.settings?.download_mode||'auto';
   $('asf-bot').value=a.settings?.bot_name||'';
   $('asf-boot').checked=Boolean(a.settings?.start_on_boot);
+  const profile=a.settings?.profile||'compatible';
+  for(const input of document.querySelectorAll('input[name="asf-profile"]'))input.checked=input.value===profile;
+  $('asf-on-demand').checked=a.settings?.on_demand!==false;
+  $('asf-idle').value=String(a.settings?.idle_minutes||10);
+  const run = a.running_profile || '';
+  const runLabel = {performance:'高性能 / 完整 ICU',compatible:'低资源兼容 / 绕过 ICU'};
+  $('asf-runtime-note').textContent =
+    `已选择：${runLabel[profile]} · ${a.running?'当前运行：'+(runLabel[run]||'未知'):'当前未运行'}` +
+    (a.rss_mb!==null && a.rss_mb!==undefined?` · ASF 实际常驻内存：${a.rss_mb} MB`:'') +
+    (a.idle_timer_active?' · 空闲停止倒计时中':'') +
+    (a.running&&run!==profile?' · 注意：配置变更需重启 ASF 才生效':'');
 }
 function render(){
   $('total').textContent=data.games.length;
@@ -235,7 +246,9 @@ $('create-bot').addEventListener('click',()=>{
 });
 $('asf-save').addEventListener('click',()=>apiAction('asf/settings',{
   mode:$('asf-mode').value,bot_name:$('asf-bot').value.trim(),start_on_boot:$('asf-boot').checked,
-  download_mode:$('asf-download-mode').value
+  download_mode:$('asf-download-mode').value,
+  profile:document.querySelector('input[name="asf-profile"]:checked')?.value||'compatible',
+  on_demand:$('asf-on-demand').checked,idle_minutes:Number($('asf-idle').value)
 },'ASF 连接设置已保存。'));
 const navLinks=[...document.querySelectorAll('.sidebar nav a')];
 for(const link of navLinks)link.addEventListener('click',()=>{for(const x of navLinks)x.classList.toggle('active',x===link);});
