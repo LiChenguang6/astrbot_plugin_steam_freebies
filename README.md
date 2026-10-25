@@ -1,6 +1,6 @@
 # Steam 喜加一监控 · AstrBot 插件
 
-> **v0.3.1（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
+> **v0.3.2（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
 
 独立插件，适用于 AstrBot ≥ 4.29.1 / Python ≥ 3.12；支持 AstrBot 的 OneBot（如 NapCat）与 QQ 官方适配器。借鉴 [原项目](https://github.com/LiChenguang6/astrbot_plugin_steam_status_monitor) 的插件面板架构，**不影响该项目**。
 
@@ -126,3 +126,13 @@ ASF 官方资料：[项目](https://github.com/JustArchiNET/ArchiSteamFarm) · [
 状态 `ASF-linux-x64.zip` 说明识别到 **AstrBot 运行环境的 Linux x64 架构**，不是需要在电脑手工下载安装。安装位置属于 AstrBot 的私有持久数据目录；不应把含 Steam 身份凭据的整个目录提交到公开 GitHub。
 
 **GitHub 仓库只托管安装器源码和可信校验值。** ASF 二进制仍需由运行 AstrBot 的 NAS/容器首次获取一次。把 ASF 程序二进制直接打包进公开仓库不会消除部署到 NAS 的网络传输，还会让仓库膨胀、难以跨架构更新，并增加供应链维护成本。
+
+## v0.3.2：群晖 / Docker 中 ASF 安装成功但启动失败
+
+此前的启动命令只有 `--no-restart`。**ASF 在没有任何已启用 Steam Bot 时可能主动退出**，尤其是新安装后还没有创建账号的情形。v0.3.2 增加 `--process-required`，使 IPC 服务在没有账号时也可以持续运行，方便首次配置 Bot。
+
+- 「启动 ASF」按钮现在在 ASF 面板内显示进度及启动失败原因，不再只有 `管理操作失败：RuntimeError`。
+- 如果仍然启动失败，面板会根据**本地 ASF 启动日志**识别缺少 `libicu`、`libssl`、glibc/musl 兼容性、执行权限和架构错误。**只显示概括性诊断，不会把 Steam 凭据或完整日志公开到页面**。
+- 群晖容器如果提示原生库缺失，需要修改 **AstrBot Docker 容器运行镜像**，仅仅在 DSM 宿主机安装依赖并不能让容器里获得这些库。
+- 不要随意把 ASF IPC 端口映射到公网；账号授权仍在 ASF 管理端完成。
+- 更新插件无需重新安装 ASF，已有的 ASF 二进制、Bot 配置和数据库位于 AstrBot 私有数据目录，不随代码更新被覆盖。

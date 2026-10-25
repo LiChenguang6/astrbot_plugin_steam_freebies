@@ -63,7 +63,7 @@ class Main(Star):
             try:
                 await self.asf_manager.start()
             except Exception as exc:
-                self.errors.append(f'ASF 自动启动失败：{type(exc).__name__}')
+                self.errors.append(f'ASF 自动启动失败：{self.asf_manager.start_error or type(exc).__name__}')
         self.task = asyncio.create_task(self.run_loop(), name="steam-freebies-poll")
 
     async def run_loop(self):
@@ -228,7 +228,14 @@ class Main(Star):
                               'notice':'ASF 安装任务已启动，将自动下载、校验并安装到插件私有目录'})
 
     async def web_asf_start(self):
-        await self.asf_manager.start()
+        try:
+            await self.asf_manager.start()
+        except RuntimeError:
+            # Only the manager's allowlisted diagnosis reaches the dashboard.
+            return error_response(
+                f"ASF 启动失败：{self.asf_manager.start_error}",
+                status_code=503
+            )
         return json_response({'ok':True, 'notice':'托管 ASF 已启动'})
 
     async def web_asf_stop(self):

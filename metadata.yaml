@@ -1,7 +1,7 @@
 name: astrbot_plugin_steam_freebies
 display_name: Steam 喜加一监控
 desc: Steam 免费活动监控、QQ群推送、增强型后台面板、第三方 Key 和可选托管 ASF 领取
-version: 0.3.1
+version: 0.3.2
 author: LiChenguang6
 astrbot_version: ">=4.29.1"
 tags:

@@ -1,5 +1,6 @@
 """Optional, opt-in local ASF runtime. Never vendors binaries or Steam credentials."""
 import asyncio
+import errno
 import hashlib
 import json
 import os
@@ -20,6 +21,35 @@ import aiohttp
 
 RELEASE_URL = 'https://api.github.com/repos/JustArchiNET/ArchiSteamFarm/releases/latest'
 BOT_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+
+
+def diagnose_start_failure(log_text: str = '', exit_code=None, error: BaseException | None = None) -> str:
+    """Turn startup output into safe, actionable hints; never expose raw ASF logs or Steam credentials."""
+    source = (log_text or '')[-16_000:].lower()
+    if isinstance(error, PermissionError) or 'permission denied' in source or 'operation not permitted' in source:
+        return 'ASF 执行权限被拒绝：检查容器数据卷是否 noexec、可执行位及目录权限。'
+    if isinstance(error, OSError) and error.errno == errno.ENOEXEC or 'exec format error' in source:
+        return '可执行文件格式不匹配：请核对 Docker 容器的 CPU 架构与 ASF 安装包。'
+    if 'libicu' in source or 'couldn\'t find a valid icu' in source or 'failed to load system icu' in source:
+        return '容器缺少 .NET 所需的 ICU 本地库（libicu）；依赖需要安装在 AstrBot 容器内部，而不是群晖宿主机。'
+    if 'libssl' in source or 'libcrypto.so' in source:
+        return '容器缺少 OpenSSL 本地依赖（libssl/libcrypto）；需要调整 AstrBot 容器镜像。'
+    if 'glibc_' in source or 'ld-linux' in source or 'musl' in source:
+        return '容器的 glibc/musl 运行时与 ASF-linux-x64 不兼容；需要匹配 Linux 发行版的运行镜像。'
+    if 'hostfxr' in source or 'hostpolicy' in source:
+        return '.NET 运行时宿主加载失败（hostfxr/hostpolicy）；检查容器本地库与安装包架构。'
+    if 'no bots are running' in source:
+        return 'ASF 因没有启用的 Steam Bot 而退出；请确认已更新到包含 --process-required 的插件版本。'
+    if 'no such file or directory' in source or isinstance(error, FileNotFoundError):
+        return '系统找不到 ASF 的执行加载器或依赖库；即使可执行文件存在，也可能缺少容器内的 Linux 动态加载器。'
+    if 'segmentation fault' in source or 'core dumped' in source:
+        return 'ASF 启动发生本地崩溃，请检查系统架构、运行时依赖和容器日志。'
+    if 'failed to bind' in source or 'address already in use' in source:
+        return '本地 IPC 端口冲突：请检查容器内是否已运行 ASF。'
+    if error is not None and isinstance(error, OSError):
+        return f'操作系统拒绝启动 ASF（errno={error.errno}）。请检查容器权限及本地依赖。'
+    return f'ASF 启动后退出（退出码 {exit_code if exit_code is not None else "未知"}）。请查看容器内 asf-manager/asf.log 尾部并隐藏账号信息。'
+
 
 
 def archive_variant(system=None, machine=None):
@@ -71,6 +101,8 @@ class ManagedASF:
         self.settings_path = self.root / 'manager.json'
         self.process = None
         self.log_handle = None
+        self.start_error = ''
+        self.last_exit_code = None
         self.install_task = None
         self.state_path = self.root / 'install-state.json'
         persisted = self._load_install_state()
@@ -164,7 +196,8 @@ class ManagedASF:
                 'download_source': self.download_source, 'download_bytes': self.download_bytes,
                 'download_total': self.download_total, 'metadata_source': self.metadata_source,
                 'ipc_url': 'http://127.0.0.1:1242' if self.running() else '',
-                'environment':self.environment()}
+                'environment':self.environment(),
+                'start_error':self.start_error, 'last_exit_code':self.last_exit_code}
 
     def _supported(self):
         try:
@@ -339,30 +372,78 @@ class ManagedASF:
                 shutil.rmtree(staging, ignore_errors=True)
             self._write_install_state()
 
+    def _recent_startup_output(self, limit=16384):
+        """Read only locally for classification. NEVER return raw logs through the dashboard."""
+        try:
+            with (self.root / 'asf.log').open('rb') as stream:
+                stream.seek(0, os.SEEK_END)
+                size = stream.tell()
+                stream.seek(max(0, size - limit))
+                return stream.read().decode('utf-8', 'replace')
+        except OSError:
+            return ''
+
     async def start(self):
         async with self._lock:
-            if self.running(): return
-            if not self.installed(): raise ValueError('请先安装 ASF 官方独立版本')
-            # Prevent silently attaching to another process on the default IPC port.
+            if self.running():
+                return
+            if not self.installed():
+                raise ValueError('请先安装 ASF 官方独立版本')
+            self.start_error = ''
+            self.last_exit_code = None
+            # Do not accidentally attach to another ASF listening on the default IPC port.
             import socket
             try:
-                with socket.create_connection(('127.0.0.1',1242),timeout=0.2):
+                with socket.create_connection(('127.0.0.1', 1242), timeout=0.2):
                     raise ValueError('本机 1242 端口已被占用，请停止其他 ASF，避免连接错账号')
-            except (ConnectionRefusedError,TimeoutError,OSError):
+            except (ConnectionRefusedError, TimeoutError, OSError):
                 pass
-            self.log_handle=(self.root/'asf.log').open('ab')
+            self.log_handle = (self.root / 'asf.log').open('ab')
+            marker = self.log_handle.tell()
+            proc = None
             try:
-                self.process=await asyncio.create_subprocess_exec(str(self.binary()), '--no-restart',
-                    cwd=str(self.path),stdin=asyncio.subprocess.DEVNULL,
-                    stdout=self.log_handle,stderr=asyncio.subprocess.STDOUT)
-                await asyncio.sleep(1)
-                if self.process.returncode is not None:
-                    raise RuntimeError('ASF 进程启动后立即退出，请查看服务器本地 asf.log')
-            except Exception:
-                self.process=None
-                self.log_handle.close()
-                self.log_handle=None
+                # Crucial on fresh installs: ASF normally exits if there are no enabled bots.
+                # --process-required keeps IPC alive so accounts can be provisioned later.
+                proc = await asyncio.create_subprocess_exec(
+                    str(self.binary()), '--no-restart', '--process-required',
+                    cwd=str(self.path), stdin=asyncio.subprocess.DEVNULL,
+                    stdout=self.log_handle, stderr=asyncio.subprocess.STDOUT
+                )
+                self.process = proc
+                await asyncio.sleep(2)
+                if proc.returncode is not None:
+                    self.last_exit_code = proc.returncode
+                    self.log_handle.flush()
+                    output = self._recent_startup_output()
+                    if marker:
+                        # Don't classify an error from an earlier process launch.
+                        with (self.root / 'asf.log').open('rb') as stream:
+                            stream.seek(marker)
+                            output = stream.read(16_384).decode('utf-8', 'replace')
+                    self.start_error = diagnose_start_failure(output, proc.returncode)
+                    raise RuntimeError(self.start_error)
+            except asyncio.CancelledError:
+                if proc and proc.returncode is None:
+                    proc.terminate()
+                    await proc.wait()
                 raise
+            except Exception as exc:
+                if not self.start_error:
+                    self.start_error = diagnose_start_failure(error=exc)
+                if proc and proc.returncode is None:
+                    proc.terminate()
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=5)
+                    except asyncio.TimeoutError:
+                        proc.kill()
+                        await proc.wait()
+                raise RuntimeError(self.start_error) from exc
+            finally:
+                if self.process is None or self.process.returncode is not None:
+                    self.process = None
+                    if self.log_handle:
+                        self.log_handle.close()
+                        self.log_handle = None
 
     async def stop(self):
         async with self._lock:

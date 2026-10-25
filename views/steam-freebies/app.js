@@ -128,9 +128,14 @@ function showASF(){
     if(env.free_mb!==null && env.free_mb!==undefined)status.push(`可用磁盘：${env.free_mb} MB`);
     if(!env.writable)status.push('警告：ASF 数据目录不可写');
   }
-  if(a.error){
-    status.push(`异常：${a.error}`);
+  if(a.start_error){
+    status.push(`启动诊断：${a.start_error}`);
+    asfFeedback(`ASF 启动失败：${a.start_error}`,true);
+  } else if(a.error){
+    status.push(`安装异常：${a.error}`);
     asfFeedback(`ASF 安装失败：${a.error}`,true);
+  } else if(a.running){
+    asfFeedback('ASF 进程已启动。首次使用仍需要在 ASF 中授权登录 Steam 账号。');
   } else if(a.install_state==='installed'){
     asfFeedback(`ASF ${a.version||''} 安装完成。现在可以点击「启动 ASF」。`);
   }
@@ -202,7 +207,21 @@ async function installASF(){
   }
 }
 $('install-asf').addEventListener('click',installASF);
-$('start-asf').addEventListener('click',()=>apiAction('asf/start',{},'托管 ASF 已启动。'));
+$('start-asf').addEventListener('click',async()=>{
+  const button=$('start-asf');
+  if(button.disabled)return;
+  button.disabled=true;
+  asfFeedback('正在启动 ASF，检测容器运行时与进程状态…');
+  try{
+    await bridge.apiPost('asf/start',{});
+    asfFeedback('ASF 进程已启动；可继续进行 Steam Bot 登录配置。');
+  }catch(error){
+    asfFeedback(`ASF 启动失败：${error?.message||String(error)}`,true);
+  }finally{
+    await reload();
+    if(!data?.asf?.running)button.disabled=false;
+  }
+});
 $('stop-asf').addEventListener('click',()=>apiAction('asf/stop',{},'托管 ASF 已停止。'));
 $('create-bot').addEventListener('click',()=>{
   const bot_name=$('asf-bot').value.trim();
