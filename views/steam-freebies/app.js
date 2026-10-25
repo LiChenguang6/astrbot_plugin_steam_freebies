@@ -10,6 +10,47 @@ let data = null;
 let filter = 'all';
 let search = '';
 const labels = {submitted:'已提交 · 待核验',reported_success:'ASF 报告成功 · 待核验',failed:'领取失败'};
+// AstrBot Plugin Views use a sandboxed iframe without allow-modals.
+// Native alert/confirm/prompt are not available; use an in-page, accessible dialog.
+let activeDialog = false;
+function askUser(message, options = {}) {
+  if (activeDialog) return Promise.resolve(null);
+  activeDialog = true;
+  const overlay = $('action-overlay');
+  const form = $('action-form');
+  const input = $('action-input');
+  $('action-message').textContent = message;
+  $('action-title').textContent = options.title || '确认操作';
+  $('action-confirm').textContent = options.confirmText || '确认';
+  input.hidden = !options.input;
+  input.required = Boolean(options.input);
+  input.value = options.input ? String(options.value || '') : '';
+  input.placeholder = options.placeholder || '';
+  overlay.hidden = false;
+  (options.input ? input : $('action-confirm')).focus();
+  return new Promise(resolve => {
+    const finish = value => {
+      overlay.hidden = true;
+      activeDialog = false;
+      form.removeEventListener('submit', submit);
+      $('action-cancel').removeEventListener('click', cancel);
+      overlay.removeEventListener('keydown', keyboard);
+      resolve(value);
+    };
+    const submit = ev => { ev.preventDefault(); finish(options.input ? input.value.trim() : true); };
+    const cancel = () => finish(null);
+    const keyboard = ev => { if (ev.key === 'Escape') { ev.preventDefault(); cancel(); } };
+    form.addEventListener('submit', submit);
+    $('action-cancel').addEventListener('click', cancel);
+    overlay.addEventListener('keydown', keyboard);
+  });
+}
+function asfFeedback(message, isError = false) {
+  const node = $('asf-operation');
+  node.textContent = String(message);
+  node.hidden = false;
+  node.classList.toggle('error', isError);
+}
 function toast(value){ const node=$('notice'); node.textContent=String(value); node.hidden=false; }
 async function apiAction(endpoint, body, ok){
   try { const result = await bridge.apiPost(endpoint,body); toast(ok||result.notice||'操作已执行'); await reload(); return result; }
@@ -27,16 +68,15 @@ function makeGame(game){
   if(game.kind==='steam_candidate'){
     const approve=e('button','批准免费包 SubID','btn ghost');
     approve.addEventListener('click',async()=>{
-      const input=prompt('请输入已在 Steam 官方页面或可信数据源确认的免费永久领取包 SubID：',game.approved_subid||'');
-      if(input===null) return;
+      const input=await askUser('输入已核实的 Free-to-Keep 永久免费包 SubID。仅填写当前有效的免费包；错误的 SubID 不能自动辨别。', {input:true, value:game.approved_subid||'', title:'批准免费包', confirmText:'批准 SubID'});
+      if(input===null)return;
       if(!/^\d{1,10}$/.test(input)||Number(input)<1||Number(input)>2147483647){toast('SubID 必须是有效正整数');return;}
-      if(!confirm('已确认这属于当前有效的 Free-to-Keep 免费永久领取包？'))return;
       await apiAction('approve',{key:game.key,subid:Number(input)},'SubID 已批准，若启用自动领取将在下次扫描尝试。');
     }); actions.append(approve);
     if(game.approved_subid){
       const claim=e('button',`通过 ASF 领取 · ${game.approved_subid}`,'btn primary');
       claim.addEventListener('click',async()=>{
-        if(!confirm('执行 Steam 免费包领取？ASF 成功响应不代表账号已实际获得许可证。'))return;
+        if(!await askUser('向 ASF 提交一次领取请求。ASF 报告成功也不等于账号已永久拥有游戏。', {title:'确认领取',confirmText:'执行领取'}))return;
         const result=await apiAction('claim',{key:game.key});
         if(result)toast(`${labels[result.status]||result.status}\n${result.result}\n请核对 Steam 账号的实际许可证。`);
       });actions.append(claim);
@@ -82,7 +122,18 @@ function showASF(){
   if(a.download_bytes && ['downloading','verifying','extracting'].includes(a.install_state))
     status.push(`已接收：${(a.download_bytes / 1024 / 1024).toFixed(1)} MB` +
                 (a.download_total?` / ${(a.download_total / 1024 / 1024).toFixed(1)} MB`:''));
-  if(a.error)status.push(`异常：${a.error}`);
+  if(a.environment){
+    const env=a.environment;
+    status.push(`运行环境：${env.container?'Docker 容器':'非 Docker'}`);
+    if(env.free_mb!==null && env.free_mb!==undefined)status.push(`可用磁盘：${env.free_mb} MB`);
+    if(!env.writable)status.push('警告：ASF 数据目录不可写');
+  }
+  if(a.error){
+    status.push(`异常：${a.error}`);
+    asfFeedback(`ASF 安装失败：${a.error}`,true);
+  } else if(a.install_state==='installed'){
+    asfFeedback(`ASF ${a.version||''} 安装完成。现在可以点击「启动 ASF」。`);
+  }
   $('asf-status').textContent=status.join(' · ');
   $('start-asf').disabled=!a.installed||a.running;
   $('stop-asf').disabled=!a.running;
@@ -132,19 +183,36 @@ for(const button of document.querySelectorAll('[data-filter]')){
   });
 }
 $('search').addEventListener('input',ev=>{search=ev.target.value.trim().toLowerCase();showGames();});
-$('install-asf').addEventListener('click',()=>{
-  if(confirm('自动下载 ASF 并安装到 AstrBot 私有数据目录？将按当前设置使用加速镜像或官方源，并且严格核验官方 SHA256。'))
-    apiAction('asf/install',{},'已开始下载。页面会自动更新下载源及校验进度。');
-});
+async function installASF(){
+  const b=$('install-asf');
+  if(b.disabled)return;
+  // The installer button is itself an explicit installation action. In particular,
+  // never gate it behind native window.confirm: iframe sandbox silently blocks it.
+  b.disabled=true;
+  asfFeedback('正在向 AstrBot 提交 ASF 安装请求…');
+  try {
+    if(!bridge)throw new Error('插件页面桥接未就绪，请从 AstrBot 插件详情打开。');
+    const result=await bridge.apiPost('asf/install',{});
+    if(!result?.ok)throw new Error(result?.message||'服务器没有确认安装请求');
+    asfFeedback('安装任务已启动；会自动下载、校验并显示进度。无需在自己的电脑下载 ASF。');
+    await reload();
+  }catch(error){
+    asfFeedback(`安装请求失败：${error?.message||String(error)}。请核对 AstrBot 版本、插件是否已重载及管理员权限。`,true);
+    b.disabled=false;
+  }
+}
+$('install-asf').addEventListener('click',installASF);
 $('start-asf').addEventListener('click',()=>apiAction('asf/start',{},'托管 ASF 已启动。'));
 $('stop-asf').addEventListener('click',()=>apiAction('asf/stop',{},'托管 ASF 已停止。'));
 $('create-bot').addEventListener('click',()=>{
   const bot_name=$('asf-bot').value.trim();
   const steam_login=$('steam-login').value.trim();
   if(!bot_name||!steam_login){toast('请填写 ASF Bot 名称和 Steam 登录名。');return;}
-  if(!confirm('只创建本地 ASF Bot 文件，不保存 Steam 密码，也不会自动登录。稍后需到 ASF-ui 完成账号验证。'))return;
-  apiAction('asf/bot',{bot_name,steam_login},'已在本机创建 Bot 配置，下一步请到 ASF-ui 配置登录和启用。');
-  $('steam-login').value='';
+  askUser('将创建不含 Steam 密码的本地 ASF Bot 配置。仍需通过 ASF 界面完成 Steam Guard 登录验证。',{title:'创建 Steam Bot 配置',confirmText:'创建配置'}).then(async ok=>{
+    if(!ok)return;
+    const result=await apiAction('asf/bot',{bot_name,steam_login},'已在本机创建 Bot 配置，下一步请到 ASF-ui 配置登录和启用。');
+    if(result)$('steam-login').value='';
+  });
 });
 $('asf-save').addEventListener('click',()=>apiAction('asf/settings',{
   mode:$('asf-mode').value,bot_name:$('asf-bot').value.trim(),start_on_boot:$('asf-boot').checked,

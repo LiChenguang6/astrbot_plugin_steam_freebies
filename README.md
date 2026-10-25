@@ -1,6 +1,6 @@
 # Steam 喜加一监控 · AstrBot 插件
 
-> **v0.3.0（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
+> **v0.3.1（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
 
 独立插件，适用于 AstrBot ≥ 4.29.1 / Python ≥ 3.12；支持 AstrBot 的 OneBot（如 NapCat）与 QQ 官方适配器。借鉴 [原项目](https://github.com/LiChenguang6/astrbot_plugin_steam_status_monitor) 的插件面板架构，**不影响该项目**。
 
@@ -96,6 +96,7 @@ python -m pip install -r requirements.txt pytest
 python -m pytest -q
 python -m compileall -q .
 node --check views/steam-freebies/app.js
+node tests/asf_button_smoke.js
 ```
 
 目前只通过离线语法检查和模拟测试，**尚未在真实 Steam 账号、QQ 群、真实 ASF 安装与领取上完成端到端验证**。请先在测试 AstrBot 和不含重要资产的测试 Steam 账号上核验权限与行为。
@@ -109,3 +110,19 @@ node --check views/steam-freebies/app.js
 5. 对 HTTP/IP C 返回文本进行有限分类，并非正式 Steam 许可证验证接口，可能有未识别的错误文本。
 
 ASF 官方资料：[项目](https://github.com/JustArchiNET/ArchiSteamFarm) · [IPC](https://github.com/JustArchiNET/ArchiSteamFarm/wiki/IPC) · [配置](https://github.com/JustArchiNET/ArchiSteamFarm/wiki/Configuration)。
+
+## 群晖 NAS / Docker：安装按钮没有反应怎么办（v0.3.1）
+
+旧版本使用了 `window.confirm()`，但 AstrBot 插件面板运行在**不允许浏览器原生弹窗**的沙箱 iframe 中，导致「安装 ASF」点击后没有提交请求，安装状态始终是 `idle`。v0.3.1 已移除所有原生 `confirm()` / `prompt()`，使用页面内交互层，并且安装按钮直接发起后台 API；错误显示在 ASF 按钮下方。
+
+操作顺序：
+
+1. 在 AstrBot 插件管理选择**从 GitHub 更新本插件**，确保详情版本显示 **0.3.1**。重载插件；浏览器使用 `Ctrl+Shift+R` 刷新页面。
+2. 打开「内置 ASF」→ 选择「自动加速」→ 保存 ASF 设置 → 点击「安装 / 更新 ASF」。按钮下方应立即显示「正在提交请求」然后显示下载、校验或明确的失败原因。
+3. 如果显示「目录不可写」，检查 DSM **Container Manager → AstrBot 容器 → 存储空间/卷映射**对 AstrBot 数据目录的读写权限。不要为了修复问题向整个 NAS 开放写入权限；只调整 AstrBot 对应目录。
+4. 如果显示网络错误，请检查**容器内部**能否访问 GitHub 或镜像域名。AstrBot WebUI 里的 GitHub 加速配置与插件自己的下载源是不同的，插件有独立加速切换设置。
+5. 如果下载安装成功但启动失败，可能是容器运行时依赖或挂载点限制。查看本地 `data/plugin_data/astrbot_plugin_steam_freebies/asf-manager/asf.log`，并确认容器的 Linux 运行时/权限匹配。
+
+状态 `ASF-linux-x64.zip` 说明识别到 **AstrBot 运行环境的 Linux x64 架构**，不是需要在电脑手工下载安装。安装位置属于 AstrBot 的私有持久数据目录；不应把含 Steam 身份凭据的整个目录提交到公开 GitHub。
+
+**GitHub 仓库只托管安装器源码和可信校验值。** ASF 二进制仍需由运行 AstrBot 的 NAS/容器首次获取一次。把 ASF 程序二进制直接打包进公开仓库不会消除部署到 NAS 的网络传输，还会让仓库膨胀、难以跨架构更新，并增加供应链维护成本。

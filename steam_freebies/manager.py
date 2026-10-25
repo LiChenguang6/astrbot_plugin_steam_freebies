@@ -11,6 +11,7 @@ import stat
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from .asf_release import PINNED_VERSION, PINNED_SHA256, DOWNLOAD_RELAYS
@@ -71,14 +72,50 @@ class ManagedASF:
         self.process = None
         self.log_handle = None
         self.install_task = None
-        self.install_state = 'idle'
-        self.last_error = ''
-        self.version = ''
+        self.state_path = self.root / 'install-state.json'
+        persisted = self._load_install_state()
+        self.install_state = 'installed' if self.installed() else persisted.get('state', 'idle')
+        if self.install_state in ('downloading', 'verifying', 'extracting'):
+            self.install_state = 'interrupted'
+        self.last_error = str(persisted.get('error') or '')[:600]
+        self.version = str(persisted.get('version') or '')[:40]
         self.download_source = ''
         self.download_bytes = 0
         self.download_total = 0
         self.metadata_source = ''
         self._lock = asyncio.Lock()
+
+    def _load_install_state(self):
+        try:
+            data = json.loads(self.state_path.read_text(encoding='utf-8'))
+            if isinstance(data, dict):
+                return {key: data.get(key) for key in ('state', 'error', 'version')}
+        except (OSError, ValueError, TypeError):
+            pass
+        return {}
+
+    def _write_install_state(self):
+        """Persist non-secret installer diagnostics across AstrBot plugin reloads."""
+        data = {'state':self.install_state, 'error':self.last_error[:600],
+                'version':self.version, 'at':datetime.now(timezone.utc).isoformat()}
+        target = self.state_path.with_suffix('.tmp')
+        try:
+            target.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
+            if os.name != 'nt': target.chmod(0o600)
+            target.replace(self.state_path)
+        except OSError:
+            # The write failure is surfaced by the install preflight or the job itself.
+            pass
+
+    def environment(self):
+        """Non-sensitive runtime diagnostics for NAS / Docker installations."""
+        try:
+            free_mb = shutil.disk_usage(self.root).free // (1024 * 1024)
+        except OSError:
+            free_mb = None
+        container = Path('/.dockerenv').exists()
+        return {'container':container, 'python_platform':platform.system(),
+                'free_mb':free_mb, 'writable':os.access(self.root, os.W_OK | os.X_OK)}
 
     def settings(self):
         default = {'mode': 'external', 'bot_name': '', 'start_on_boot': False, 'download_mode': 'auto'}
@@ -126,7 +163,8 @@ class ManagedASF:
                 'variant': archive_variant() if self._supported() else 'unsupported',
                 'download_source': self.download_source, 'download_bytes': self.download_bytes,
                 'download_total': self.download_total, 'metadata_source': self.metadata_source,
-                'ipc_url': 'http://127.0.0.1:1242' if self.running() else ''}
+                'ipc_url': 'http://127.0.0.1:1242' if self.running() else '',
+                'environment':self.environment()}
 
     def _supported(self):
         try:
@@ -139,11 +177,18 @@ class ManagedASF:
             raise ValueError('正在下载 ASF，请勿重复操作')
         if self.running():
             raise ValueError('请先停止已运行的 ASF，再更新安装')
+        archive_variant()  # Surface unsupported Synology CPU architecture immediately.
+        info = self.environment()
+        if not info['writable']:
+            raise ValueError('ASF 私有目录不可写，请检查群晖 Container Manager 的映射卷读写权限')
+        if info['free_mb'] is not None and info['free_mb'] < 350:
+            raise ValueError('ASF 目录剩余空间低于 350 MB，无法安全解压安装包')
         self.install_state = 'downloading'
         self.last_error = ''
         self.download_source = ''
         self.download_bytes = 0
         self.download_total = 0
+        self._write_install_state()
         self.install_task = asyncio.create_task(self._install_job(), name='steam-freebies-asf-install')
 
     @staticmethod
@@ -292,6 +337,7 @@ class ManagedASF:
         finally:
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)
+            self._write_install_state()
 
     async def start(self):
         async with self._lock:
