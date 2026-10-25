@@ -8,7 +8,14 @@ def utcnow():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-DEFAULT_SETTINGS = {"scan_minutes": 60, "push_enabled": True, "auto_claim_enabled": False}
+DEFAULT_SETTINGS = {
+    "scan_minutes": 60,
+    "push_enabled": True,
+    "push_steam": True,
+    "push_third_party": True,
+    "push_claim_results": True,
+    "auto_claim_enabled": False,
+}
 
 
 class Store:
@@ -41,6 +48,15 @@ class Store:
           game_key TEXT PRIMARY KEY, subid INTEGER NOT NULL, at TEXT NOT NULL,
           status TEXT NOT NULL, result TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS claim_events(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          game_key TEXT NOT NULL, subid INTEGER NOT NULL,
+          at TEXT NOT NULL, status TEXT NOT NULL, result TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS claim_event_sent(
+          target_id INTEGER NOT NULL, event_id INTEGER NOT NULL,
+          sent_at TEXT NOT NULL, PRIMARY KEY(target_id,event_id)
+        );
         """)
         self.db.commit()
 
@@ -60,7 +76,7 @@ class Store:
             raise ValueError("存在不支持的设置字段")
         if "scan_minutes" in values and (type(values["scan_minutes"]) is not int or not 30 <= values["scan_minutes"] <= 360):
             raise ValueError("扫描间隔须为 30–360 分钟")
-        for k in ("push_enabled", "auto_claim_enabled"):
+        for k in ("push_enabled", "push_steam", "push_third_party", "push_claim_results", "auto_claim_enabled"):
             if k in values and type(values[k]) is not bool:
                 raise ValueError(f"{k} 必须是布尔值")
         with self.db:
@@ -118,10 +134,17 @@ class Store:
             self.db.execute("DELETE FROM claims WHERE game_key=? AND subid<>?", (key, subid))
 
     def pending_pushes(self, target_id, max_rows=10):
-        return [dict(r) for r in self.db.execute("""
+        opts=self.settings()
+        if not opts['push_enabled']: return []
+        # Old notifications are not replayed weeks later after a service recovery.
+        query = """
          SELECT g.* FROM games g LEFT JOIN sent s ON s.game_key=g.key AND s.target_id=?
-         WHERE s.game_key IS NULL AND g.last_seen>=datetime('now','-14 days')
-         ORDER BY g.first_seen DESC LIMIT ?""", (target_id,max_rows))]
+         WHERE s.game_key IS NULL AND g.last_seen>=?
+           AND ((g.kind='steam_candidate' AND ?=1) OR (g.kind='third_party' AND ?=1))
+         ORDER BY g.first_seen DESC LIMIT ?"""
+        from datetime import timedelta
+        since=(datetime.now(timezone.utc)-timedelta(hours=48)).isoformat(timespec='seconds')
+        return [dict(r) for r in self.db.execute(query, (target_id,since,int(opts['push_steam']),int(opts['push_third_party']),max_rows))]
 
     def marked(self, target_id, key):
         with self.db:
@@ -134,8 +157,27 @@ class Store:
           ORDER BY g.first_seen ASC LIMIT 5""")]
 
     def claim_record(self, key, subid, status, result):
+        now=utcnow()
         with self.db:
-            self.db.execute("INSERT OR REPLACE INTO claims VALUES (?,?,?,?,?)", (key,subid,utcnow(),status,result[:700]))
+            self.db.execute("INSERT OR REPLACE INTO claims VALUES (?,?,?,?,?)", (key,subid,now,status,result[:700]))
+            return self.db.execute("""INSERT INTO claim_events(game_key,subid,at,status,result)
+                         VALUES (?,?,?,?,?)""",(key,subid,now,status,result[:700])).lastrowid
+
+    def pending_claim_events(self, target_id, limit=20):
+        return [dict(x) for x in self.db.execute("""
+            SELECT e.*,g.name,g.url FROM claim_events e JOIN games g ON g.key=e.game_key
+            LEFT JOIN claim_event_sent s ON s.event_id=e.id AND s.target_id=?
+            WHERE s.event_id IS NULL AND e.at>=? ORDER BY e.id ASC LIMIT ?""",
+            (target_id,(datetime.now(timezone.utc)-__import__('datetime').timedelta(days=2)).isoformat(timespec='seconds'),limit))]
+
+    def mark_claim_event(self,target_id,event_id):
+        with self.db:
+            self.db.execute("INSERT OR IGNORE INTO claim_event_sent VALUES (?,?,?)",(target_id,event_id,utcnow()))
+
+    def latest_claim_events(self,limit=30):
+        return [dict(x) for x in self.db.execute("""
+            SELECT e.*,g.name FROM claim_events e JOIN games g ON g.key=e.game_key
+            ORDER BY e.id DESC LIMIT ?""",(limit,))]
 
     def get_game(self, key):
         row = self.db.execute("SELECT * FROM games WHERE key=?", (key,)).fetchone()

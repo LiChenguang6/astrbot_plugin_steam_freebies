@@ -1,48 +1,150 @@
 const bridge = window.AstrBotPluginView || window.AstrBotPluginPage;
 const $ = id => document.getElementById(id);
-function el(tag, txt, className) { const n = document.createElement(tag); if (txt !== undefined) n.textContent = String(txt); if (className) n.className = className; return n; }
-function info(text){ $('notice').textContent = text; }
-async function action(endpoint, payload, message){ try { const result = await bridge.apiPost(endpoint,payload); info(message || '操作完成'); await refresh(); return result; }catch(e){ info('操作失败：'+ e.message); throw e; } }
-function drawGame(g){
-  const card=el('article',undefined,'game');
-  card.append(el('h4',g.name),el('div',`${g.source} · ${g.original_price || '未知价格'} · ${g.end_date || '结束时间待核实'}`,'meta'));
-  card.append(el('span',g.kind==='steam_candidate'?'100% 折扣候选':'第三方赠送','chip'));
-  card.append(el('p',g.confidence));
-  const foot=el('div',undefined,'foot');
-  const link=el('a','查看领取页面'); link.href=g.url;link.target='_blank';link.rel='noopener noreferrer';foot.append(link);
-  if(g.kind==='steam_candidate'){
-    const approve=el('button','批准 SubID');approve.className='secondary';approve.addEventListener('click',async()=>{
-      const answer=prompt('请输入已核实的 Free-to-Keep 免费领取包 SubID（纯数字）：',g.approved_subid||'');
-      if(answer===null) return;
-      if(!/^\d{1,10}$/.test(answer)||Number(answer)<1||Number(answer)>2147483647){info('SubID 不合法');return;}
-      if(!confirm('确认已核实该 Steam 免费永久领取包？错误的 SubID 可能导致领取失败。'))return;
-      await action('approve',{key:g.key,subid:Number(answer)},'已批准 SubID；自动领取开启时下次扫描会尝试执行');
-    });foot.append(approve);
-    if(g.approved_subid){
-      const claim=el('button',`执行 ASF 领取 (${g.approved_subid})`);
-      claim.addEventListener('click',async()=>{if(!confirm('确认向你配置的 ASF Steam 账号发送免费领取命令？'))return;
-        const res=await action('claim',{key:g.key},'已发送 ASF 命令，结果请核对');info(`ASF 状态：${res.status}\n${res.result}`);
-      });foot.append(claim);
+const e = (tag, content, cls) => {
+  const node = document.createElement(tag);
+  if (content !== undefined) node.textContent = String(content);
+  if (cls) node.className = cls;
+  return node;
+};
+let data = null;
+let filter = 'all';
+let search = '';
+const labels = {submitted:'已提交 · 待核验',reported_success:'ASF 报告成功 · 待核验',failed:'领取失败'};
+function toast(value){ const node=$('notice'); node.textContent=String(value); node.hidden=false; }
+async function apiAction(endpoint, body, ok){
+  try { const result = await bridge.apiPost(endpoint,body); toast(ok||result.notice||'操作已执行'); await reload(); return result; }
+  catch(err) { toast('操作失败：'+err.message); return null; }
+}
+function makeGame(game){
+  const card=e('article',undefined,'game');
+  const top=e('div',undefined,'game-top');
+  top.append(e('span',game.kind==='steam_candidate'?'Steam 商店折扣候选':'第三方赠 Key / 活动',game.kind==='steam_candidate'?'chip steam':'chip'));
+  top.append(e('span',game.source,'meta')); card.append(top);
+  card.append(e('div',game.name,'game-title'),e('div',`原价：${game.original_price||'未知'} · 截止：${game.end_date||'以活动页为准'}`,'meta'));
+  card.append(e('p',game.confidence));
+  const actions=e('div',undefined,'actions');
+  const url=e('a','打开领取页面 ↗');url.href=game.url;url.target='_blank';url.rel='noopener noreferrer';actions.append(url);
+  if(game.kind==='steam_candidate'){
+    const approve=e('button','批准免费包 SubID','btn ghost');
+    approve.addEventListener('click',async()=>{
+      const input=prompt('请输入已在 Steam 官方页面或可信数据源确认的免费永久领取包 SubID：',game.approved_subid||'');
+      if(input===null) return;
+      if(!/^\d{1,10}$/.test(input)||Number(input)<1||Number(input)>2147483647){toast('SubID 必须是有效正整数');return;}
+      if(!confirm('已确认这属于当前有效的 Free-to-Keep 免费永久领取包？'))return;
+      await apiAction('approve',{key:game.key,subid:Number(input)},'SubID 已批准，若启用自动领取将在下次扫描尝试。');
+    }); actions.append(approve);
+    if(game.approved_subid){
+      const claim=e('button',`通过 ASF 领取 · ${game.approved_subid}`,'btn primary');
+      claim.addEventListener('click',async()=>{
+        if(!confirm('执行 Steam 免费包领取？ASF 成功响应不代表账号已实际获得许可证。'))return;
+        const result=await apiAction('claim',{key:game.key});
+        if(result)toast(`${labels[result.status]||result.status}\n${result.result}\n请核对 Steam 账号的实际许可证。`);
+      });actions.append(claim);
     }
-    if(g.claim_status) card.append(el('p',`ASF：${g.claim_status} · ${(g.claim_result||'').slice(0,170)}`));
+    if(game.claim_status)card.append(e('div',`上次 ASF 反馈：${labels[game.claim_status]||game.claim_status} · ${(game.claim_result||'').slice(0,140)}`,'record-text'));
   }
-  card.append(foot);return card;
+  card.append(actions);return card;
 }
-async function refresh(){
-  try{
-    const s=await bridge.apiGet('snapshot');
-    $('total').textContent=s.games.length+ (s.games.length===150?'+':'');
-    $('groups').textContent=s.targets.filter(v=>v.enabled).length;
-    $('last').textContent=s.last_scan?new Date(s.last_scan).toLocaleString():'尚未扫描';
-    $('interval').value=s.settings.scan_minutes; $('push').checked=s.settings.push_enabled; $('autoclaim').checked=s.settings.auto_claim_enabled;
-    $('errors').textContent=(s.errors||[]).join('\n');
-    $('games').replaceChildren(...(s.games.length?s.games.map(drawGame):[el('div','暂无发现。可点击「立即扫描」检查网络与数据源。','muted')]));
-    const targets=s.targets.map(t=>{const row=el('div',undefined,'target');const desc=el('div');desc.append(el('strong',`群 ${t.group_id}`),el('div',`${t.platform_id} · ${t.official?'QQ 官方':'OneBot'} · ${t.enabled?'已启用':'已暂停'}`,'meta'));row.append(desc);
-      if(t.enabled){const b=el('button','测试推送');b.className='secondary';b.addEventListener('click',()=>action('test-send',{target_id:t.id},'已尝试测试推送'));row.append(b);}return row;});
-    $('target-list').replaceChildren(...(targets.length?targets:[el('div','暂无绑定群。请在 QQ 群使用 /喜加一绑定','muted')]));
-  }catch(e){info('后台读取失败：'+e.message);}
+function showGames(){
+  if(!data)return;
+  const games=data.games.filter(g=>(filter==='all'||g.kind===filter)&&(!search||g.name.toLowerCase().includes(search)));
+  $('activity-count').textContent=`显示 ${games.length} 条 / 最近缓存 ${data.games.length} 条`;
+  $('games').replaceChildren(...(games.length?games.map(makeGame):[e('p','没有符合当前筛选条件的免费活动。','empty')]));
 }
-$('refresh').addEventListener('click',refresh);
-$('scan').addEventListener('click',()=>action('scan',{},'扫描完成'));
-$('save').addEventListener('click',()=>action('settings',{scan_minutes:Number($('interval').value),push_enabled:$('push').checked,auto_claim_enabled:$('autoclaim').checked},'设置已保存'));
-if(!bridge)info('没有找到 AstrBot 面板桥接 API，请从插件详情页打开。'); else bridge.ready().then(refresh).catch(e=>info('桥接连接失败：'+e.message));
+function showClaimHistory(){
+  const events=data.claim_events||[];
+  const items=events.map(x=>{
+    const item=e('div',undefined,'activity-item'),left=e('div');
+    left.append(e('strong',x.name||x.game_key),e('small',`SubID ${x.subid} · ${new Date(x.at).toLocaleString()} · ${(x.result||'').slice(0,180)}`));
+    item.append(left,e('span',labels[x.status]||x.status,`result-status ${x.status}`));return item;
+  });
+  $('claim-history').replaceChildren(...(items.length?items:[e('p','还没有 ASF 领取记录。','empty')]));
+}
+function showTargets(){
+  const targets=data.targets||[];
+  const rows=targets.map(t=>{
+    const item=e('div',undefined,'activity-item');const left=e('div');
+    left.append(e('strong',`QQ群 ${t.group_id}`),e('small',`${t.platform_id} · ${t.official?'QQ 官方':'OneBot'} · ${t.enabled?'推送已启用':'已暂停'}`));
+    item.append(left);
+    if(t.enabled){const button=e('button','发送测试消息','btn ghost');button.addEventListener('click',()=>apiAction('test-send',{target_id:t.id},'已向该群执行测试推送'));item.append(button);}
+    return item;
+  });
+  $('target-list').replaceChildren(...(rows.length?rows:[e('p','暂未绑定QQ群，请在目标群发送 /喜加一绑定。','empty')]));
+}
+function showASF(){
+  const a=data.asf||{};
+  $('asf-badge').textContent=a.running?'运行中':a.installed?'已安装 · 未运行':'尚未安装';
+  $('asf-badge').className=`pill ${a.running?'ok':a.installed?'warn':'neutral'}`;
+  const status=[`平台包：${a.variant||'未知'}`,`安装状态：${a.install_state||'未操作'}`];
+  if(a.version)status.push(`版本：${a.version}`);
+  if(a.error)status.push(`异常：${a.error}`);
+  $('asf-status').textContent=status.join(' · ');
+  $('start-asf').disabled=!a.installed||a.running;
+  $('stop-asf').disabled=!a.running;
+  $('install-asf').disabled=['downloading','verifying'].includes(a.install_state)||a.running;
+  $('asf-mode').value=a.settings?.mode||'external';
+  $('asf-bot').value=a.settings?.bot_name||'';
+  $('asf-boot').checked=Boolean(a.settings?.start_on_boot);
+}
+function render(){
+  $('total').textContent=data.games.length;
+  $('steam-count').textContent=data.games.filter(g=>g.kind==='steam_candidate').length;
+  $('key-count').textContent=data.games.filter(g=>g.kind==='third_party').length;
+  $('groups').textContent=data.targets.filter(x=>x.enabled).length;
+  $('last').textContent=data.last_scan?`最近扫描：${new Date(data.last_scan).toLocaleString()}`:'尚未扫描';
+  $('scan-status').textContent=data.last_scan?'扫描已执行':'等待首次扫描';
+  $('scan-status').className=`pill ${data.last_scan?'ok':'neutral'}`;
+  const errorCount=(data.errors||[]).length;
+  $('source-status').textContent=errorCount?`${errorCount} 项数据源/通知异常，请查看下面详情`:'未发现数据源异常';
+  $('errors').hidden=!errorCount;
+  $('errors').textContent=(data.errors||[]).join('\n');
+  $('interval').value=data.settings.scan_minutes;
+  $('push').checked=data.settings.push_enabled;
+  $('push-steam').checked=data.settings.push_steam;
+  $('push-key').checked=data.settings.push_third_party;
+  $('push-result').checked=data.settings.push_claim_results;
+  $('autoclaim').checked=data.settings.auto_claim_enabled;
+  showGames(); showClaimHistory(); showTargets(); showASF();
+}
+async function reload(){
+  if(!bridge)return;
+  try{data=await bridge.apiGet('snapshot');render();}
+  catch(err){toast('控制台连接失败：'+err.message);}
+}
+$('refresh').addEventListener('click',reload);
+$('scan').addEventListener('click',()=>apiAction('scan',{},'已完成一次扫描，请查看最新发现和数据源提示。'));
+$('save').addEventListener('click',()=>apiAction('settings',{
+  scan_minutes:Number($('interval').value),push_enabled:$('push').checked,
+  push_steam:$('push-steam').checked,push_third_party:$('push-key').checked,
+  push_claim_results:$('push-result').checked,auto_claim_enabled:$('autoclaim').checked
+},'推送和扫描设置已保存。'));
+for(const button of document.querySelectorAll('[data-filter]')){
+  button.addEventListener('click',()=>{
+    filter=button.dataset.filter;
+    for(const node of document.querySelectorAll('[data-filter]'))node.classList.toggle('selected',node===button);
+    showGames();
+  });
+}
+$('search').addEventListener('input',ev=>{search=ev.target.value.trim().toLowerCase();showGames();});
+$('install-asf').addEventListener('click',()=>{
+  if(confirm('从 ArchiSteamFarm 官方 GitHub Release 下载匹配本机平台的安装包，验证哈希并安装到 AstrBot 私有数据目录？'))
+    apiAction('asf/install',{},'已开始下载，稍后点击「刷新」查看下载及验证状态。');
+});
+$('start-asf').addEventListener('click',()=>apiAction('asf/start',{},'托管 ASF 已启动。'));
+$('stop-asf').addEventListener('click',()=>apiAction('asf/stop',{},'托管 ASF 已停止。'));
+$('create-bot').addEventListener('click',()=>{
+  const bot_name=$('asf-bot').value.trim();
+  const steam_login=$('steam-login').value.trim();
+  if(!bot_name||!steam_login){toast('请填写 ASF Bot 名称和 Steam 登录名。');return;}
+  if(!confirm('只创建本地 ASF Bot 文件，不保存 Steam 密码，也不会自动登录。稍后需到 ASF-ui 完成账号验证。'))return;
+  apiAction('asf/bot',{bot_name,steam_login},'已在本机创建 Bot 配置，下一步请到 ASF-ui 配置登录和启用。');
+  $('steam-login').value='';
+});
+$('asf-save').addEventListener('click',()=>apiAction('asf/settings',{
+  mode:$('asf-mode').value,bot_name:$('asf-bot').value.trim(),start_on_boot:$('asf-boot').checked
+},'ASF 连接设置已保存。'));
+const navLinks=[...document.querySelectorAll('.sidebar nav a')];
+for(const link of navLinks)link.addEventListener('click',()=>{for(const x of navLinks)x.classList.toggle('active',x===link);});
+$('clock').textContent=new Date().toLocaleDateString('zh-CN',{year:'numeric',month:'long',day:'numeric'});
+if(bridge)bridge.ready().then(reload).catch(err=>toast('面板桥接连接失败：'+err.message));
+else toast('请从已登录的 AstrBot 插件详情页打开此控制台。');

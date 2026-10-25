@@ -1,7 +1,6 @@
 """AstrBot QQ Steam freebies: discovery -> dedup -> push -> optional approved ASF claim."""
 import asyncio
 import os
-import time
 from datetime import datetime, timezone
 
 from astrbot.api import logger
@@ -11,6 +10,7 @@ from astrbot.api.star import Context, Star, StarTools
 from astrbot.api.web import error_response, json_response, request
 
 from .steam_freebies.asf import claim_sub
+from .steam_freebies.manager import ManagedASF
 from .steam_freebies.sources import fetch_candidates
 from .steam_freebies.store import Store
 
@@ -22,9 +22,12 @@ OFFICIAL_QQ = {"qq_official", "qq_official_webhook", "qqofficial"}
 class Main(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-        self.store = Store(StarTools.get_data_dir(PLUGIN) / "freebies.sqlite3")
+        data_dir = StarTools.get_data_dir(PLUGIN)
+        self.store = Store(data_dir / "freebies.sqlite3")
+        self.asf_manager = ManagedASF(data_dir / 'asf-manager')
         self.scan_lock = asyncio.Lock()
         self.claim_lock = asyncio.Lock()
+        self.claim_notifications_lock = asyncio.Lock()
         self.task = None
         self.errors = []
         self.last_scan = ""
@@ -38,6 +41,11 @@ class Main(Star):
             ("POST", "approve"): self.web_approve,
             ("POST", "claim"): self.web_claim,
             ("POST", "test-send"): self.web_test,
+            ("POST", "asf/install"): self.web_asf_install,
+            ("POST", "asf/start"): self.web_asf_start,
+            ("POST", "asf/stop"): self.web_asf_stop,
+            ("POST", "asf/settings"): self.web_asf_settings,
+            ("POST", "asf/bot"): self.web_asf_bot,
         }
         for (method, path), handler in api.items():
             async def guarded(handler=handler):
@@ -51,6 +59,11 @@ class Main(Star):
                     logger.warning("[Steam喜加一] 管理操作失败：%s", type(exc).__name__)
                     return error_response("操作失败，请查看 AstrBot 日志", status_code=503)
             self.context.register_web_api(f"/{PLUGIN}/{path}", guarded, [method], "Steam喜加一后台")
+        if self.asf_manager.installed() and self.asf_manager.settings()['mode'] == 'managed' and self.asf_manager.settings()['start_on_boot']:
+            try:
+                await self.asf_manager.start()
+            except Exception as exc:
+                self.errors.append(f'ASF 自动启动失败：{type(exc).__name__}')
         self.task = asyncio.create_task(self.run_loop(), name="steam-freebies-poll")
 
     async def run_loop(self):
@@ -73,11 +86,13 @@ class Main(Star):
             if candidates:
                 self.store.upsert_games(candidates)
             # If all providers failed, don't treat that as an empty successful scan.
-            if self.store.settings()["push_enabled"] and candidates:
+            if self.store.settings()['push_enabled'] and candidates:
                 await self.push_to_groups()
-            if self.store.settings()["auto_claim_enabled"] and candidates:
+            if self.store.settings()['auto_claim_enabled'] and candidates:
                 await self.process_approved_claims()
-            return {"candidates": len(candidates), "errors": errors}
+            # Delivery is retried even if both activity sources are unavailable.
+            await self.push_claim_events()
+            return {'candidates': len(candidates), 'errors': errors}
 
     async def send_group(self, target, text):
         platform = self.context.get_platform_inst(target["platform_id"])
@@ -100,12 +115,14 @@ class Main(Star):
             if not target["enabled"]:
                 continue
             for g in self.store.pending_pushes(target["id"], max_rows=10):
-                kind = "Steam 100% 折扣候选" if g["kind"] == "steam_candidate" else "第三方 Steam 游戏赠送"
-                text = (f"🎁 Steam 喜加一线索｜{kind}\n"
-                        f"游戏：{g['name']}\n原价：{g['original_price'] or '未知'}\n"
+                kind = 'Steam 商店 100% 折扣候选' if g['kind'] == 'steam_candidate' else '第三方 Steam Key / 活动赠送'
+                tip = ('Steam 商店活动需核实是否为永久入库。' if g['kind']=='steam_candidate'
+                       else '第三方活动可能需要注册、积分、地区资格或库存，无法通过 ASF 直接领取 Key。')
+                text = (f"🎁 免费游戏发现｜{kind}\n"
+                        f"游戏：{g['name']}\n标价：{g['original_price'] or '未知'}\n"
                         f"截止：{g['end_date'] or '以活动页面为准'}\n"
-                        f"链接：{g['url']}\n提示：{g['confidence']}\n"
-                        "请人工确认地区限制和是否永久入库。")
+                        f"领取页面：{g['url']}\n{tip}\n"
+                        f"来源提示：{g['confidence']}")
                 try:
                     await self.send_group(target, text)
                 except Exception as exc:
@@ -115,6 +132,30 @@ class Main(Star):
                     self.store.marked(target["id"], g["key"])
                     await asyncio.sleep(1)
 
+    async def push_claim_events(self):
+        if not self.store.settings()['push_claim_results']:
+            return
+        async with self.claim_notifications_lock:
+            for target in self.store.targets():
+                if not target['enabled']: continue
+                for ev in self.store.pending_claim_events(target['id']):
+                    status = {'failed':'❌ 领取失败',
+                              'reported_success':'✅ ASF 报告成功（待账户核验）',
+                              'submitted':'🕓 已提交（待账户核验）'}.get(ev['status'],'🕓 待核验')
+                    msg = (f"🎮 Steam 自动领取结果｜{status}\n"
+                           f"游戏：{ev['name']}\nSubID：{ev['subid']}\n"
+                           f"ASF 响应：{ev['result'][:220]}\n"
+                           f"商店：{ev['url']}\n"
+                           '最终是否永久入库，请在 Steam 账号许可证中核实。')
+                    try:
+                        await self.send_group(target,msg)
+                    except Exception as exc:
+                        self.errors.append(f"群 {target['group_id']} 领取结果通知失败: {type(exc).__name__}")
+                        break
+                    else:
+                        self.store.mark_claim_event(target['id'],ev['id'])
+                        await asyncio.sleep(1)
+
     async def do_claim(self, key):
         async with self.claim_lock:
             row = self.store.get_game(key)
@@ -123,12 +164,14 @@ class Main(Star):
             subid = int(row["approved_subid"])
             # No automatic repeated attempts after a recorded attempt; manually triggering can retry.
             try:
-                result = await claim_sub(subid)
-                status = "submitted"
+                status, result = await claim_sub(subid,self.asf_manager)
             except Exception as exc:
-                status, result = "failed", f"{type(exc).__name__}: {str(exc)[:160]}"
+                status, result = 'failed', f'{type(exc).__name__}: {str(exc)[:160]}'
             self.store.claim_record(key, subid, status, result)
-            return {"status": status, "result": result, "notice": "submitted 仅代表 ASF 命令接收，必须检查 Steam 许可证"}
+        # Broadcast after releasing claim_lock, avoiding blocking the next ASF command.
+        await self.push_claim_events()
+        return {'status':status,'result':result,
+                'notice':'ASF 的返回不代表 Steam 永久许可证已经得到核验'}
 
     async def process_approved_claims(self):
         for row in self.store.pending_claims():
@@ -150,7 +193,9 @@ class Main(Star):
             "last_scan": self.last_scan,
             "last_items": self.last_items,
             "errors": self.errors[-10:],
-            "claim_configured": bool(os.getenv("ASTR_STEAM_ASF_BOT")),
+            "claim_configured": bool(os.getenv('ASTR_STEAM_ASF_BOT')) or bool(self.asf_manager.settings()['bot_name']),
+            "asf": self.asf_manager.status(),
+            "claim_events": self.store.latest_claim_events(),
             "disclaimer": "搜索到的候选不保证是永久入库；仅通过人工批准 SubID 的 Steam 商店候选才能调用 ASF。",
         }
 
@@ -176,6 +221,26 @@ class Main(Star):
     async def web_claim(self):
         body = await request.json(default={})
         return json_response(await self.do_claim(body["key"]))
+
+    async def web_asf_install(self):
+        self.asf_manager.install()
+        return json_response({'ok': True, 'notice':'后台已开始下载官方 ASF，刷新查看状态'})
+
+    async def web_asf_start(self):
+        await self.asf_manager.start()
+        return json_response({'ok':True, 'notice':'托管 ASF 已启动'})
+
+    async def web_asf_stop(self):
+        await self.asf_manager.stop()
+        return json_response({'ok':True})
+
+    async def web_asf_settings(self):
+        body = await request.json(default={})
+        return json_response({'settings':self.asf_manager.save_settings(body)})
+
+    async def web_asf_bot(self):
+        body=await request.json(default={})
+        return json_response(self.asf_manager.prepare_bot(body.get('bot_name'),body.get('steam_login')))
 
     async def web_test(self):
         body = await request.json(default={})
@@ -231,4 +296,5 @@ class Main(Star):
                 await self.task
             except asyncio.CancelledError:
                 pass
+        await self.asf_manager.close()
         self.store.db.close()
