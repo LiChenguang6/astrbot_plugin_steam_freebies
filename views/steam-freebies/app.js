@@ -257,9 +257,22 @@ $('bili-uid-add').addEventListener('click',async()=>{
   const result=await apiAction('bili/add',{mid:id});
   if(result)$('bili-uid').value='';
 });
-// Official Bilibili QR flow: only the QR image reaches the browser, never cookies or token.
+// Bilibili login operates entirely inside the restricted AstrBot plugin iframe.
+// Never navigate the parent page, open a popup, expose session cookies, or log SMS codes.
 let qrTimer=null;
 function endQrPolling(){if(qrTimer!==null){clearInterval(qrTimer);qrTimer=null;}}
+function renderBiliQr(matrix){
+  if(!Array.isArray(matrix)||matrix.length<21||matrix.length>180||!matrix.every(row=>typeof row==='string' && row.length===matrix.length && /^[01]+$/.test(row)))throw new Error('服务器二维码矩阵格式不正确');
+  const n=matrix.length, ns='http://www.w3.org/2000/svg';
+  const svg=document.createElementNS(ns,'svg');
+  svg.setAttribute('viewBox',`0 0 ${n} ${n}`);svg.setAttribute('width','232');svg.setAttribute('height','232');
+  svg.setAttribute('role','img');svg.setAttribute('aria-label','B站官方登录二维码');
+  const bg=document.createElementNS(ns,'rect');bg.setAttribute('width',String(n));bg.setAttribute('height',String(n));bg.setAttribute('fill','#fff');svg.appendChild(bg);
+  const black=document.createElementNS(ns,'path');let d='';
+  for(let y=0;y<n;y++)for(let x=0;x<n;x++)if(matrix[y][x]==='1')d+=`M${x} ${y}h1v1h-1z`;
+  black.setAttribute('d',d);black.setAttribute('fill','#000');svg.appendChild(black);
+  $('bili-qr-grid').replaceChildren(svg);
+}
 async function checkBiliQr(){
   try{
     const result=await bridge.apiPost('bili/login/poll',{});
@@ -268,7 +281,7 @@ async function checkBiliQr(){
       endQrPolling();
       if(result.state==='success'){
         $('bili-qr-box').hidden=true;
-        toast('B站已登录；下次扫描会使用你的私有会话读取公开视频信息');
+        toast('B站扫码登录成功；现在可以使用已登录的会话读取 B站公开内容');
         await reload();
       }
     }
@@ -278,19 +291,83 @@ $('bili-login-start').addEventListener('click',async()=>{
   const btn=$('bili-login-start');btn.disabled=true;
   try{
     const result=await bridge.apiPost('bili/login/start',{});
-    if(!result.image?.startsWith('data:image/svg+xml;base64,'))throw new Error('二维码格式不正确');
-    $('bili-qr-image').src=result.image;
-    $('bili-qr-hint').textContent=result.notice;
-    $('bili-qr-box').hidden=false;
-    endQrPolling();
-    qrTimer=setInterval(checkBiliQr,3500);
-  }catch(err){toast('B站二维码生成失败：'+err.message);}
+    renderBiliQr(result.matrix);
+    $('bili-qr-hint').textContent=result.notice||'手机 B站 App 扫码确认';
+    $('bili-qr-box').hidden=false;endQrPolling();qrTimer=setInterval(checkBiliQr,3500);
+  }catch(err){toast('B站二维码生成失败：'+(err?.message||String(err)));}
   finally{btn.disabled=false;}
 });
 $('bili-qr-check').addEventListener('click',checkBiliQr);
+$('bili-mode-qr-tab').addEventListener('click',()=>{
+  $('bili-mode-qr').hidden=false;$('bili-mode-sms').hidden=true;
+  $('bili-mode-qr-tab').classList.add('selected');$('bili-mode-sms-tab').classList.remove('selected');
+});
+$('bili-mode-sms-tab').addEventListener('click',()=>{
+  $('bili-mode-qr').hidden=true;$('bili-mode-sms').hidden=false;
+  $('bili-mode-sms-tab').classList.add('selected');$('bili-mode-qr-tab').classList.remove('selected');
+});
+let geetestProof=null;
+let geetestLoader=null;
+function smsInfo(message){$('bili-sms-status').textContent=message;}
+function loadOfficialGeetest(){
+  if(typeof window.initGeetest==='function')return Promise.resolve();
+  if(geetestLoader)return geetestLoader;
+  geetestLoader=new Promise((resolve,reject)=>{
+    const script=document.createElement('script');
+    script.src='https://static.geetest.com/static/tools/gt.js';script.async=true;
+    script.onload=()=>typeof window.initGeetest==='function'?resolve():reject(new Error('极验组件未初始化'));
+    script.onerror=()=>reject(new Error('极验脚本被网络或浏览器拦截'));
+    document.head.appendChild(script);
+  }).catch(err=>{geetestLoader=null;throw err;});
+  return geetestLoader;
+}
+$('bili-sms-captcha').addEventListener('click',async()=>{
+  const btn=$('bili-sms-captcha');btn.disabled=true;geetestProof=null;$('bili-sms-send').disabled=true;
+  $('bili-geetest').replaceChildren();smsInfo('正在从 B站获取人机验证并加载极验组件…');
+  try{
+    const captcha=await bridge.apiPost('bili/sms/captcha',{});
+    await loadOfficialGeetest();
+    window.initGeetest({gt:captcha.gt,challenge:captcha.challenge,offline:false,new_captcha:true,product:'embed',width:'100%'},obj=>{
+      if(!obj||typeof obj.onSuccess!=='function'){smsInfo('极验组件接口不兼容，请改用扫码登录');return;}
+      const attach=obj.appendTo||obj.appendto;
+      if(typeof attach==='function')attach.call(obj,'#bili-geetest');
+      obj.onSuccess(()=>{
+        const proof=obj.getValidate();
+        if(proof?.geetest_validate && proof?.geetest_challenge && proof?.geetest_seccode){
+          geetestProof={challenge:proof.geetest_challenge,validate:proof.geetest_validate,seccode:proof.geetest_seccode};
+          $('bili-sms-send').disabled=false;smsInfo('人机验证通过，可以点击「发送短信验证码」');
+        }
+      });
+      if(typeof obj.onError==='function')obj.onError(()=>smsInfo('极验加载或验证失败，请重试；也可以选择扫码登录'));
+    });
+  }catch(err){smsInfo('无法完成人机验证：'+(err?.message||String(err))+'。请尝试扫码登录。');}
+  finally{btn.disabled=false;}
+});
+$('bili-sms-send').addEventListener('click',async()=>{
+  const tel=$('bili-sms-phone').value.trim();
+  if(!/^\d{6,20}$/.test(tel)){smsInfo('请输入有效手机号（只填数字）');return;}
+  if(!geetestProof){smsInfo('请先完成人机验证');return;}
+  const btn=$('bili-sms-send');btn.disabled=true;
+  try{
+    const result=await bridge.apiPost('bili/sms/send',{tel,cid:1,...geetestProof});
+    geetestProof=null;$('bili-sms-login').disabled=false;
+    smsInfo(result.notice||'短信发送成功，请输入短信验证码');
+  }catch(err){geetestProof=null;smsInfo('短信请求失败：'+(err?.message||String(err))+'；请重新完成人机验证');}
+});
+$('bili-sms-login').addEventListener('click',async()=>{
+  const input=$('bili-sms-code'),code=input.value.trim();
+  if(!/^\d{4,8}$/.test(code)){smsInfo('请输入 4–8 位数字短信验证码');return;}
+  const btn=$('bili-sms-login');btn.disabled=true;input.value='';
+  try{
+    const result=await bridge.apiPost('bili/sms/login',{code});
+    smsInfo(result.notice||'B站登录成功');
+    toast('B站已登录；插件只保存 B站登录会话，不保存手机号或验证码');
+    await reload();
+  }catch(err){smsInfo('短信登录失败：'+(err?.message||String(err))+'；可重新申请验证码');btn.disabled=false;}
+});
 $('bili-login-logout').addEventListener('click',async()=>{
-  if(!await askUser('只清除插件的 B站本地会话；这不会退出你手机上的 B站 App。',{title:'退出 B站会话'}))return;
-  endQrPolling();$('bili-qr-box').hidden=true;
+  if(!await askUser('只清除插件的 B站本地会话；这不会退出你手机上的 B站 App。',{title:'清除 B站会话'}))return;
+  endQrPolling();$('bili-qr-box').hidden=true;geetestProof=null;
   await apiAction('bili/logout',{});
 });
 $('bili-save').addEventListener('click',()=> $('save').click());

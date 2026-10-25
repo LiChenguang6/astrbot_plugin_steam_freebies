@@ -60,6 +60,9 @@ class Main(Star):
             ("POST", "bili/login/start"): self.web_bili_login_start,
             ("POST", "bili/login/poll"): self.web_bili_login_poll,
             ("POST", "bili/logout"): self.web_bili_logout,
+            ("POST", "bili/sms/captcha"): self.web_bili_sms_captcha,
+            ("POST", "bili/sms/send"): self.web_bili_sms_send,
+            ("POST", "bili/sms/login"): self.web_bili_sms_login,
             ("POST", "ai/settings"): self.web_ai_settings,
             ("POST", "asf/install"): self.web_asf_install,
             ("POST", "asf/start"): self.web_asf_start,
@@ -334,6 +337,19 @@ class Main(Star):
 
     async def web_bili_logout(self):
         return json_response(self.bili_auth.logout())
+
+    async def web_bili_sms_captcha(self):
+        return json_response(await self.bili_auth.sms_captcha())
+
+    async def web_bili_sms_send(self):
+        body = await request.json(default={})
+        return json_response(await self.bili_auth.sms_send(
+            body.get('tel'), body.get('cid'), body.get('challenge'),
+            body.get('validate'), body.get('seccode')))
+
+    async def web_bili_sms_login(self):
+        body = await request.json(default={})
+        return json_response(await self.bili_auth.sms_login(body.get('code')))
 
     async def web_asf_install(self):
         self.asf_manager.install()

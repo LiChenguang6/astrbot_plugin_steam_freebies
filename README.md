@@ -1,6 +1,6 @@
 # Steam 喜加一监控 · AstrBot 插件
 
-> **v0.6.1（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
+> **v0.6.2（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
 
 独立插件，适用于 AstrBot ≥ 4.29.1 / Python ≥ 3.12；支持 AstrBot 的 OneBot（如 NapCat）与 QQ 官方适配器。借鉴 [原项目](https://github.com/LiChenguang6/astrbot_plugin_steam_status_monitor) 的插件面板架构，**不影响该项目**。
 
@@ -281,3 +281,13 @@ node --check views/steam-freebies/app.js
 ### 升级
 
 AstrBot 插件管理更新至 v0.6.1 → 安装更新依赖（新增 `qrcode`）→ 重载 → `Ctrl+Shift+R` 强制刷新页面。SQLite 和 ASF 登录配置保持不变；不会修改群晖容器端口映射。真实 B站扫码和群晖代理需在用户 NAS 网络环境自行验证；离线测试不能保证特定网络可用。
+
+
+## v0.6.2：B站登录不跳转网页，支持短信验证码
+
+- 新版 B站线索页面提供两个登录标签：「手机扫码登录」与「短信验证码登录」。扫码二维码由插件直接在受限制的 AstrBot iframe 内绘制成 SVG，不依赖 data: 图片或外部弹窗；用户用 B站 App 扫码、确认即可。
+- 短信方式通过 `passport.bilibili.com/x/passport-login/captcha` 获取人机验证挑战，调用官方 GeeTest v3 客户端组件（`static.geetest.com`）由用户本人完成图形验证后，才允许使用 B站短信发送及验证码登录接口。**不允许绕过验证码或自动打码**。如果服务器或浏览器无法访问 GeeTest、B站更新接口或被反机器人拦截，则明确提示失败、可切换扫码方式；不保证所有 AstrBot 受限 iframe 内均可用。
+- 手机号码、短信码、GeeTest 登录令牌只在本次登录流程中使用（短信登录阶段暂存于插件内存，过期失效），不会被写入 SQLite、配置文件或回应到浏览器。登录成功才保存白名单 B站 Cookie 到 AstrBot 私有目录，限制 Linux 文件权限为 `0600`。不要在 HTTP 公网连接上传输手机号、验证码；建议在可信 HTTPS 局域网管理页操作。
+- **登录不等于能无限访问 B站**：即使登录成功，WBI、搜索接口仍可能因 IP 风控返回 412/其他代码；插件不绕过限制。
+
+官方 B站并未承诺向第三方长期提供稳定的 SMS Web API，极验前端也依赖外部 CDN，真实联调可能需要后续适配；见 [CHANGELOG.md](CHANGELOG.md)。
