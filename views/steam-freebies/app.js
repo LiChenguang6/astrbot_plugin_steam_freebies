@@ -294,7 +294,13 @@ $('bili-login-start').addEventListener('click',async()=>{
     renderBiliQr(result.matrix);
     $('bili-qr-hint').textContent=result.notice||'手机 B站 App 扫码确认';
     $('bili-qr-box').hidden=false;endQrPolling();qrTimer=setInterval(checkBiliQr,3500);
-  }catch(err){toast('B站二维码生成失败：'+(err?.message||String(err)));}
+  }catch(err){
+    endQrPolling();
+    $('bili-qr-grid').replaceChildren();
+    $('bili-qr-box').hidden=false;
+    $('bili-qr-hint').textContent='二维码无法生成：'+(err?.message||String(err))+'。此时不是扫码问题，请先排查接口错误。';
+    toast('B站二维码生成失败，请查看二维码区域的错误说明');
+  }
   finally{btn.disabled=false;}
 });
 $('bili-qr-check').addEventListener('click',checkBiliQr);
@@ -352,7 +358,10 @@ $('bili-sms-send').addEventListener('click',async()=>{
     const result=await bridge.apiPost('bili/sms/send',{tel,cid:1,...geetestProof});
     geetestProof=null;$('bili-sms-login').disabled=false;
     smsInfo(result.notice||'短信发送成功，请输入短信验证码');
-  }catch(err){geetestProof=null;smsInfo('短信请求失败：'+(err?.message||String(err))+'；请重新完成人机验证');}
+  }catch(err){
+    geetestProof=null;
+    smsInfo('短信请求失败：'+(err?.message||String(err))+'。人机验证票据只可使用一次；若需重试，请等待至少 60 秒后重新开始验证。');
+  }
 });
 $('bili-sms-login').addEventListener('click',async()=>{
   const input=$('bili-sms-code'),code=input.value.trim();

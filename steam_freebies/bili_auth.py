@@ -14,6 +14,8 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from ._qr_vendor import QRCode, constants  # Matrix-only QR generator bundled under BSD-3-Clause
+
 PASSPORT = 'https://passport.bilibili.com'
 ALLOWED = ('SESSDATA', 'bili_jct', 'DedeUserID', 'DedeUserID__ckMd5')
 QRCODE_RE = re.compile(r'^[a-zA-Z0-9]{16,80}$')
@@ -50,6 +52,7 @@ class BiliAuth:
         self._captcha = None
         self._sms = None
         self._sms_last_sent = 0
+        self._sms_last_attempt = 0
 
     def _read(self):
         try:
@@ -94,17 +97,19 @@ class BiliAuth:
         return headers
 
     async def qr_start(self):
-        import qrcode
-        async with aiohttp.ClientSession(headers=self.headers(), timeout=aiohttp.ClientTimeout(total=12)) as session:
-            async with session.get(PASSPORT + '/x/passport-login/web/qrcode/generate', allow_redirects=False) as response:
-                response.raise_for_status()
-                body = await response.json(content_type=None)
+        try:
+            async with aiohttp.ClientSession(headers=self.headers(), timeout=aiohttp.ClientTimeout(total=12)) as session:
+                async with session.get(PASSPORT + '/x/passport-login/web/qrcode/generate', allow_redirects=False) as response:
+                    response.raise_for_status()
+                    body = await response.json(content_type=None)
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            raise ValueError(f'B站二维码接口连接失败（{type(exc).__name__}）；请检查 NAS 到 passport.bilibili.com 的网络') from None
         info = _api_data(body, '二维码初始化')
         url, key = info.get('url'), info.get('qrcode_key')
         if not is_official_scan_url(url) or not isinstance(key, str) or not QRCODE_RE.fullmatch(key):
             raise ValueError('B站没有返回有效的官方登录二维码')
         self._qr_key, self._qr_started, self._qr_last_poll = key, time.monotonic(), 0
-        qr = qrcode.QRCode(border=3, box_size=6, error_correction=qrcode.constants.ERROR_CORRECT_M)
+        qr = QRCode(border=4, box_size=6, error_correction=constants.ERROR_CORRECT_M)
         qr.add_data(url)
         qr.make(fit=True)
         # Render as native DOM/SVG in the iframe: avoids blocked data: images, popups and navigation.
@@ -171,17 +176,21 @@ class BiliAuth:
             raise ValueError('人机验证已失效，请重新完成验证')
         if challenge != c['challenge'] or not isinstance(validate, str) or not CAPTCHA_ANSWER_RE.fullmatch(validate) or not isinstance(seccode, str) or not CAPTCHA_ANSWER_RE.fullmatch(seccode):
             raise ValueError('请先完成 B站官方人机验证')
-        if time.monotonic() - self._sms_last_sent < 60:
-            raise ValueError('短信发送间隔至少 60 秒，请稍后再试')
+        if time.monotonic() - max(self._sms_last_sent, self._sms_last_attempt) < 60:
+            raise ValueError('短信发送需间隔至少 60 秒；先等待，再重新完成新的极验，不要频繁尝试')
         fields = {'tel': tel, 'cid': str(cid), 'source': 'main_web',
                   'token': c['token'], 'challenge': challenge,
                   'validate': validate, 'seccode': seccode}
         self._captcha = None  # Reuse of a GeeTest solution is not allowed.
+        self._sms_last_attempt = time.monotonic()
         async with aiohttp.ClientSession(headers=self.headers(), timeout=aiohttp.ClientTimeout(total=15)) as session:
             async with session.post(PASSPORT + '/x/passport-login/web/sms/send',
                                     data=fields, allow_redirects=False) as response:
                 response.raise_for_status()
                 body = await response.json(content_type=None)
+        if isinstance(body, dict) and body.get('code') == 86005:
+            # Undocumented by the public endpoint references. Don't mislabel it as bad SMS code.
+            raise ValueError('B站短信发送被拒绝（code=86005）。B站未公开明确原因，可能是登录环境或人机验证风险；请勿连续重试，建议先用扫码登录')
         data = _api_data(body, '发送短信验证码')
         key = data.get('captcha_key')
         if not isinstance(key, str) or not QRCODE_RE.fullmatch(key):

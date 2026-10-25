@@ -2,7 +2,7 @@
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Steam Freebies · AstrBot 控制台</title><link rel="stylesheet" href="./style.css"></head>
 <body><div class="shell">
 <aside class="sidebar"><div class="brand"><div class="brand-mark">S</div><div><strong>STEAM FREEBIES</strong><span>AstrBot 控制台</span></div></div>
-<div class="nav-caption">工作台</div><nav aria-label="主导航"><a href="#dashboard" class="active">◈ <span>监控概览</span></a><a href="#activity">◫ <span>免费活动</span></a><a href="#price-watch">₱ <span>游戏关注</span></a><a href="#bilibili">▷ <span>B站线索</span></a><a href="#claims">✓ <span>领取记录</span></a><a href="#automation">⚙ <span>监控设置</span></a><a href="#asf">⌘ <span>内置 ASF</span></a><a href="#qq">☷ <span>QQ群组</span></a></nav><div class="sidebar-bottom"><span class="glow-dot"></span> ASTROBOT PLUGIN <strong>v0.6.2</strong></div></aside>
+<div class="nav-caption">工作台</div><nav aria-label="主导航"><a href="#dashboard" class="active">◈ <span>监控概览</span></a><a href="#activity">◫ <span>免费活动</span></a><a href="#price-watch">₱ <span>游戏关注</span></a><a href="#bilibili">▷ <span>B站线索</span></a><a href="#claims">✓ <span>领取记录</span></a><a href="#automation">⚙ <span>监控设置</span></a><a href="#asf">⌘ <span>内置 ASF</span></a><a href="#qq">☷ <span>QQ群组</span></a></nav><div class="sidebar-bottom"><span class="glow-dot"></span> ASTROBOT PLUGIN <strong>v0.6.3</strong></div></aside>
 <main class="workspace">
 <header class="topbar"><div class="crumb">STEAM FREEBIES <span>/</span> <b>监控控制台</b></div><div class="top-actions"><span id="clock" class="clock"></span><button id="refresh" class="btn ghost">↻ 刷新</button><button id="scan" class="btn primary">◈ 立即扫描</button></div></header>
 <section id="dashboard" class="hero"><div><span class="eyebrow">YOUR GIVEAWAY COMMAND CENTER</span><h1>限免与价格变化，不再错过。</h1><p>统一监控 Steam 商店促销及第三方 Steam Key 活动，自动向 QQ 群播报，并追踪 ASF 领取结果。</p><div class="hero-foot"><span id="scan-status" class="pill neutral">等待首次扫描</span><span id="source-status" class="small-note">数据状态尚未加载</span></div></div><div class="hero-art" aria-hidden="true"><div class="orbit one"></div><div class="orbit two"></div><div class="big-gift">✧</div></div></section>
@@ -99,7 +99,7 @@
 <p class="subtitle">建议流程：创建本地 Bot 配置 → 保存托管模式 → 启动 ASF → 启用 Bot → 输入 Steam 密码（若需要）→ 启动 Bot → 收到 Steam Guard 要求时提交验证码 → 再次启动 Bot。登录授权仍需由账号持有人完成。密码与验证码不进入 QQ 推送、历史记录或 GitHub。</p>
 </div></div></section>
 <section id="qq" class="section"><div class="section-title"><div><span class="eyebrow">DELIVERY</span><h2>QQ群组推送</h2></div></div><p class="subtitle">以 AstrBot 管理员身份在目标 QQ 群发送 <code>/喜加一绑定</code>；发送 <code>/喜加一解绑</code> 可以暂停。QQ 官方机器人需要具备主动发送权限。</p><p class="subtitle">测试消息现在可以重复发送（同群间隔 30 秒），正式活动仍然按群去重。没有新的活动时，扫描成功也不会重复推送之前的游戏。</p><div id="target-list" class="activity-list"><p class="empty">暂无已绑定群</p></div></section>
-<footer>STEAM FREEBIES <b>v0.6.2</b> · 仅展示促销/赠送线索，真实库存、资格及永久免费领取请以提供方为准。</footer>
+<footer>STEAM FREEBIES <b>v0.6.3</b> · 仅展示促销/赠送线索，真实库存、资格及永久免费领取请以提供方为准。</footer>
 </main></div>
 <div id="action-overlay" class="dialog-overlay" hidden>
   <div class="dialog-panel" role="dialog" aria-modal="true" aria-labelledby="action-title" aria-describedby="action-message">

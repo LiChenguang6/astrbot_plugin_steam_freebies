@@ -1,6 +1,6 @@
 # Steam 喜加一监控 · AstrBot 插件
 
-> **v0.6.2（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
+> **v0.6.3（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
 
 独立插件，适用于 AstrBot ≥ 4.29.1 / Python ≥ 3.12；支持 AstrBot 的 OneBot（如 NapCat）与 QQ 官方适配器。借鉴 [原项目](https://github.com/LiChenguang6/astrbot_plugin_steam_status_monitor) 的插件面板架构，**不影响该项目**。
 
@@ -291,3 +291,12 @@ AstrBot 插件管理更新至 v0.6.1 → 安装更新依赖（新增 `qrcode`）
 - **登录不等于能无限访问 B站**：即使登录成功，WBI、搜索接口仍可能因 IP 风控返回 412/其他代码；插件不绕过限制。
 
 官方 B站并未承诺向第三方长期提供稳定的 SMS Web API，极验前端也依赖外部 CDN，真实联调可能需要后续适配；见 [CHANGELOG.md](CHANGELOG.md)。
+
+
+## v0.6.3：B站登录错误处理
+
+如果旧版「生成二维码」失败，新版不再要求额外安装 Python `qrcode` 依赖。点击「生成二维码」后，在二维码区可看到失败原因：若提示接口超时或拒绝，说明 AstrBot Docker 与 `passport.bilibili.com` 的连接或 B站风控需要处理，不能通过变更二维码绘制代码解决。
+
+短信接口返回 `86005` 是 B站拒绝发送请求，无法凭该代码确定具体原因。不要连续重试；至少间隔 60 秒并重新完成官方人机验证，或优先使用 B站 App 扫码。跨设备（电脑浏览器和 NAS）极验会话可能受 B站额外校验，插件不提供绕过。
+
+附带第三方二维码矩阵生成器受 `steam_freebies/_qr_vendor/LICENSE` 许可；只用于离线生成二维码图案，授权链接不会发送给第三方二维码服务。
