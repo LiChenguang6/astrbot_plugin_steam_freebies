@@ -28,7 +28,7 @@ def test_creator_only_auto_claims_and_dedup(tmp_path):
     db.upsert_games([event('creator-valid'),event('creator-sale',state='sale_100',appid=99),
                      event('search-valid',origin='search',appid=55),
                      event('creator-paid',state='not_free',appid=66)])
-    assert {x['key'] for x in db.auto_claim_pending()}=={'creator-valid','creator-sale'}
+    assert {x['key'] for x in db.auto_claim_pending()}=={'creator-sale'}
     db.auto_claim_record('creator-valid',42,'app',42,'failed','Steam denied')
     assert {x['key'] for x in db.auto_claim_pending()}=={'creator-sale'}
     assert db.auto_claim_get('creator-valid')['status']=='failed'

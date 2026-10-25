@@ -180,7 +180,7 @@ class Store:
         return [dict(r) for r in self.db.execute("SELECT * FROM targets ORDER BY id")]
 
     def games(self, limit=150):
-        return [dict(r) for r in self.db.execute("SELECT g.*,c.status AS claim_status,c.result AS claim_result FROM games g LEFT JOIN claims c ON c.game_key=g.key ORDER BY g.last_seen DESC LIMIT ?", (limit,))]
+        return [dict(r) for r in self.db.execute("SELECT g.*,c.status AS claim_status,c.result AS claim_result FROM games g LEFT JOIN claims c ON c.game_key=g.key WHERE NOT (g.kind='bilibili_tip' AND g.steam_state='free') ORDER BY g.last_seen DESC LIMIT ?", (limit,))]
 
     def upsert_games(self, games):
         added = 0
@@ -230,7 +230,7 @@ class Store:
         query = """
          SELECT g.* FROM games g LEFT JOIN sent s ON s.game_key=g.key AND s.target_id=?
          WHERE s.game_key IS NULL AND g.last_seen>=?
-           AND ((g.kind='steam_candidate' AND ?=1) OR (g.kind='third_party' AND ?=1) OR (g.kind='paid_to_free' AND ?=1) OR (g.kind='watch_price' AND ?=1) OR (g.kind='bilibili_tip' AND ?=1 AND ((g.bili_origin='creator' AND ?=1) OR (g.bili_origin='search' AND ?=1 AND (EXISTS (SELECT 1 FROM auto_claims ac WHERE ac.game_key=g.key AND ac.status='reported_success') OR EXISTS (SELECT 1 FROM claims c WHERE c.game_key=g.key AND c.status='reported_success'))))) OR (g.kind='promo_api' AND ?=1))
+           AND ((g.kind='steam_candidate' AND ?=1) OR (g.kind='third_party' AND ?=1) OR (g.kind='paid_to_free' AND ?=1) OR (g.kind='watch_price' AND ?=1) OR (g.kind='bilibili_tip' AND g.steam_state='sale_100' AND ?=1 AND ((g.bili_origin='creator' AND ?=1) OR (g.bili_origin='search' AND ?=1 AND (EXISTS (SELECT 1 FROM auto_claims ac WHERE ac.game_key=g.key AND ac.status='reported_success') OR EXISTS (SELECT 1 FROM claims c WHERE c.game_key=g.key AND c.status='reported_success'))))) OR (g.kind='promo_api' AND ?=1))
          ORDER BY g.first_seen DESC LIMIT ?"""
         from datetime import timedelta
         since=(datetime.now(timezone.utc)-timedelta(hours=48)).isoformat(timespec='seconds')
@@ -305,7 +305,7 @@ class Store:
         return [dict(r) for r in self.db.execute("""SELECT g.* FROM games g LEFT JOIN auto_claims a ON a.game_key=g.key
           WHERE g.kind='bilibili_tip' AND g.bili_origin='creator' AND g.last_seen>=?
           AND g.appid>0 AND g.steam_url=('https://store.steampowered.com/app/' || g.appid || '/')
-          AND g.steam_state IN ('free','sale_100') AND a.game_key IS NULL
+          AND g.steam_state='sale_100' AND a.game_key IS NULL
           ORDER BY g.last_seen DESC LIMIT ?""",(since,limit))]
 
     def auto_claim_overview(self, limit=70):

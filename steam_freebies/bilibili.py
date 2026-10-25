@@ -171,15 +171,24 @@ async def fetch_bilibili_tips(store,ai_config=None,auth=None,network=None,corrob
             for creator in creators:
                 mid=creator['mid']
                 try:
-                    data=await _bili_json(session,'/x/polymer/web-dynamic/v1/feed/space',{'host_mid':mid})
+                    data=await _bili_json(session,'/x/polymer/web-dynamic/v1/feed/space',
+                        {'host_mid':mid,'timezone_offset':-480,'platform':'web'})
                     for dynamic in (data.get('items') or [])[:4]:
                         tip=dynamic_tip(dynamic)
                         if tip:
                             tip['mid']=mid
                             raw.append((tip,'creator'))
-                    report.append({'kind':'source','name':f'UP {mid} 动态','detail':'读取成功'})
+                    report.append({'kind':'source','name':f'UP {mid} 动态','detail':'读取成功（仅表示接口可用，未保证发现活动）'})
+                except aiohttp.ClientResponseError as exc:
+                    message=f'UP {mid} 动态：HTTP {exc.status}（B站返回拒绝或异常响应；视频仍会独立检查）'
+                    errors.append(message)
+                    report.append({'kind':'error','name':f'UP {mid} 动态','detail':message})
                 except (aiohttp.ClientError,TimeoutError,ValueError,TypeError) as exc:
-                    errors.append(f'UP {mid} 动态：{type(exc).__name__}（B站可能限流）')
+                    # ValueError contains only a numeric B站 API code from _bili_json.
+                    reason=str(exc)[:100] if isinstance(exc,ValueError) else type(exc).__name__
+                    message=f'UP {mid} 动态：{reason}（视频仍会独立检查）'
+                    errors.append(message)
+                    report.append({'kind':'error','name':f'UP {mid} 动态','detail':message})
                 await asyncio.sleep(.25)
             if creators or mode=='both':
                 try:image,sub=await _wbi_keys(session)
@@ -263,7 +272,7 @@ async def fetch_bilibili_tips(store,ai_config=None,auth=None,network=None,corrob
                 corroborated=appid in (corroborated_appids or set())
                 allowed=permit_notification(origin,state,corroborated=corroborated,
                                              blocked=any(x in content for x in NEGATIVE))
-                detail=f'{reason}；'+('促销 API 也证实该 AppID' if corroborated else '未发现独立 API 佐证')
+                detail=f'AppID {appid}：{reason}；'+('促销 API 也证实该 AppID' if corroborated else '未发现独立 API 佐证')
                 if not allowed:
                     report.append({'kind':'skipped','name':tip['name'][:90],'detail':detail,'url':tip['url'],'steam_url':link})
                     continue

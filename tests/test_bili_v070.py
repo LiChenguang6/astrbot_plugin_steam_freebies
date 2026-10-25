@@ -42,7 +42,7 @@ def test_steam_free_check_strict_and_no_license_proof():
     assert classify_store_details(details({'type':'game','is_free':True}),42)[0]=='free'
     assert classify_store_details(details({'type':'game','is_free':False,'price_overview':{'initial':1000,'final':0,'discount_percent':0}}),42)[0]=='not_free'
     assert classify_store_details(details({'type':'dlc','is_free':True}),42)[0]=='unknown'
-    assert permit_notification('creator','free')
+    assert not permit_notification('creator','free')
     assert permit_notification('creator','sale_100')
     assert not permit_notification('creator','not_free')
     assert not permit_notification('search','free',corroborated=True)
@@ -57,7 +57,7 @@ def test_v066_migration_store_push_source_gates_and_both_links(tmp_path):
     db.update_settings({'bili_enabled':True,'push_bilibili':True,'bili_discovery_mode':'both'})
     base={'name':'Steam 喜加一','source':'Bilibili','kind':'bilibili_tip','appid':42,
           'url':'https://store.steampowered.com/app/42/','steam_url':'https://store.steampowered.com/app/42/',
-          'bili_source_url':'https://t.bilibili.com/123456789','confidence':'核验','original_price':'免费'}
+          'bili_source_url':'https://t.bilibili.com/123456789','confidence':'核验','original_price':'免费','steam_state':'sale_100'}
     db.upsert_games([{**base,'key':'bili:creator:1','bili_origin':'creator'},
                     {**base,'key':'bili:search:2','bili_origin':'search'},
                     {**base,'key':'bili:old:3','bili_origin':''}])

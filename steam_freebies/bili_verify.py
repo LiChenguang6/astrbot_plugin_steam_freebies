@@ -44,7 +44,7 @@ def classify_store_details(payload, appid):
             and price.get('final') == 0 and price.get('discount_percent') == 100):
         return 'sale_100', 'Steam 当前显示原价大于 0 且折扣 100%（不等于许可证已入库）'
     if item.get('is_free') is True:
-        return 'free', 'Steam 当前 is_free=true（不证明以前收费或永久入库）'
+        return 'free', 'Steam 仅返回 is_free=true：可能是普通永久免费/F2P；未确认限时免费永久领取，已排除自动领取和 QQ 推送'
     return 'not_free', 'Steam 未确认当前免费/100% 折扣'
 
 
@@ -73,7 +73,8 @@ def permit_notification(origin, steam_state, *, corroborated=False, blocked=Fals
     if blocked:
         return False
     if origin=='creator':
-        return steam_state in ('sale_100','free')
+        # is_free alone commonly describes free-to-play; never promote it as Free-to-Keep.
+        return steam_state == 'sale_100'
     if origin=='search':
         return steam_state == 'sale_100' and bool(corroborated)
     return False

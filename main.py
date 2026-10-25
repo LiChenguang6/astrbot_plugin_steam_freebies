@@ -308,7 +308,12 @@ class Main(Star):
         if not retry and self.store.auto_claim_get(key):return
         async with aiohttp.ClientSession() as session:
             state,reason=await verify_steam(session,appid,network)
-        if state not in ('free','sale_100'):
+        if state == 'free':
+            # Ordinary F2P is not a limited Free-to-Keep license. No ASF or failure alert.
+            self.store.auto_claim_record(key,appid,'app',appid,'handled',
+                'Steam 仅证实普通免费状态，未发现 100% 限免，自动排除且没有调用 ASF')
+            return
+        if state != 'sale_100':
             self.store.auto_claim_record(key,appid,'app',appid,'failed',
                 f'领取前 Steam 重新核验未通过：{reason}')
             return

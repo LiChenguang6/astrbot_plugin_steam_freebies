@@ -2,7 +2,7 @@
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Steam Freebies · AstrBot 控制台</title><link rel="stylesheet" href="./style.css"></head>
 <body><div class="shell">
 <aside class="sidebar"><div class="brand"><div class="brand-mark">S</div><div><strong>STEAM FREEBIES</strong><span>AstrBot 控制台</span></div></div>
-<div class="nav-caption">工作台</div><nav aria-label="主导航"><a href="#dashboard" class="active">◈ <span>监控概览</span></a><a href="#activity">◫ <span>免费活动</span></a><a href="#price-watch">₱ <span>游戏关注</span></a><a href="#bilibili">▷ <span>B站线索</span></a><a href="#review">⚠ <span>失败接管</span></a><a href="#claims">✓ <span>领取记录</span></a><a href="#automation">⚙ <span>监控设置</span></a><a href="#asf">⌘ <span>内置 ASF</span></a><a href="#qq">☷ <span>QQ群组</span></a></nav><div class="sidebar-bottom"><span class="glow-dot"></span> ASTROBOT PLUGIN <strong>v0.6.6</strong></div></aside>
+<div class="nav-caption">工作台</div><nav aria-label="主导航"><a href="#dashboard" class="active">◈ <span>监控概览</span></a><a href="#activity">◫ <span>免费活动</span></a><a href="#price-watch">₱ <span>游戏关注</span></a><a href="#bilibili">▷ <span>B站线索</span></a><a href="#review">⚠ <span>失败接管</span></a><a href="#claims">✓ <span>领取记录</span></a><a href="#automation">⚙ <span>监控设置</span></a><a href="#asf">⌘ <span>内置 ASF</span></a><a href="#qq">☷ <span>QQ群组</span></a></nav><div class="sidebar-bottom"><span class="glow-dot"></span> ASTROBOT PLUGIN <strong>v0.7.2</strong></div></aside>
 <main class="workspace">
 <header class="topbar"><div class="crumb">STEAM FREEBIES <span>/</span> <b>监控控制台</b></div><div class="top-actions"><span id="clock" class="clock"></span><button id="refresh" class="btn ghost">↻ 刷新</button><button id="scan" class="btn primary">◈ 立即扫描</button></div></header>
 <section id="dashboard" class="hero"><div><span class="eyebrow">YOUR GIVEAWAY COMMAND CENTER</span><h1>限免与价格变化，不再错过。</h1><p>统一监控 Steam 商店促销及第三方 Steam Key 活动，自动向 QQ 群播报，并追踪 ASF 领取结果。</p><div class="hero-foot"><span id="scan-status" class="pill neutral">等待首次扫描</span><span id="source-status" class="small-note">数据状态尚未加载</span></div></div><div class="hero-art" aria-hidden="true"><div class="orbit one"></div><div class="orbit two"></div><div class="big-gift">✧</div></div></section>
@@ -74,7 +74,7 @@
 <label class="field">搜索关键词（逗号分隔，最多 5 个）<input id="bili-keywords" type="text" maxlength="140" placeholder="Steam 喜加一,Steam 限时免费,Steam 永久免费"></label>
 <label class="toggle-line" id="bili-toggle-discovery"><span><strong>B站线索发现</strong><small>订阅 UP 主和搜索关键词，默认关闭；接口被风控时不会跳过验证</small></span><input id="bili-enabled" type="checkbox"></label>
 <label class="toggle-line" id="bili-toggle-push"><span><strong>允许 B站合格线索发送到 QQ（总开关）</strong><small>无明确 Steam 游戏链接或 Steam 商店未核实的内容一律不推送</small></span><input id="push-bilibili" type="checkbox"></label>
-<label class="toggle-line"><span><strong>推送指定 UP 主的 Steam 免费游戏</strong><small>检测视频/动态；需官方商店显示当前免费或 100% 折扣，同时附 Steam 与 B站源链接</small></span><input id="bili-push-creators" type="checkbox"></label>
+<label class="toggle-line"><span><strong>推送指定 UP 主的 Steam 免费游戏</strong><small>检测视频/动态；需 Steam 商店显示原价大于 0 且 100% 折扣；仅 is_free=true 的普通免费游戏不进入推送</small></span><input id="bili-push-creators" type="checkbox"></label>
 <label class="toggle-line"><span><strong>推送搜索的严格核验结果</strong><small>默认关闭；必须 Steam 100% 折扣、ITAD 独立佐证，且已经有 ASF 报告成功的领取记录才能候选推送；ASF 结果不保证永久入库。</small></span><input id="bili-push-search" type="checkbox"></label>
 <label class="toggle-line"><span><strong>无人值守：指定 UP 主游戏自动尝试免费领取</strong><small>默认关闭；先向 Steam 复核、再由 ASF 尝试 app/，已批准 SubID 的 100% 折扣优先使用 sub/。失败或无法确认永久许可证才进待处理列表；不会购买付费游戏。</small></span><input id="bili-unattended" type="checkbox"></label>
 <label class="toggle-line"><span><strong>指定 UP 主关联的已批准 SubID 自动尝试 ASF 领取</strong><small>默认关闭。仅限你已在 Steam 活动卡片中明确批准过的免费包 SubID；不从 AppID 猜包，不自动兑换第三方 Key。</small></span><input id="bili-auto-claim" type="checkbox"></label>
@@ -119,7 +119,7 @@
 <p class="subtitle">建议流程：创建本地 Bot 配置 → 保存托管模式 → 启动 ASF → 启用 Bot → 输入 Steam 密码（若需要）→ 启动 Bot → 收到 Steam Guard 要求时提交验证码 → 再次启动 Bot。登录授权仍需由账号持有人完成。密码与验证码不进入 QQ 推送、历史记录或 GitHub。</p>
 </div></div></section>
 <section id="qq" class="section"><div class="section-title"><div><span class="eyebrow">DELIVERY</span><h2>QQ群组推送</h2></div></div><p class="subtitle">以 AstrBot 管理员身份在目标 QQ 群发送 <code>/喜加一绑定</code>；发送 <code>/喜加一解绑</code> 可以暂停。QQ 官方机器人需要具备主动发送权限。</p><p class="subtitle">测试消息现在可以重复发送（同群间隔 30 秒），正式活动仍然按群去重。没有新的活动时，扫描成功也不会重复推送之前的游戏。</p><div id="target-list" class="activity-list"><p class="empty">暂无已绑定群</p></div></section>
-<footer>STEAM FREEBIES <b>v0.7.0</b> · 仅展示促销/赠送线索，真实库存、资格及永久免费领取请以提供方为准。</footer>
+<footer>STEAM FREEBIES <b>v0.7.2</b> · 仅展示促销/赠送线索，真实库存、资格及永久免费领取请以提供方为准。</footer>
 </main></div>
 <div id="action-overlay" class="dialog-overlay" hidden>
   <div class="dialog-panel" role="dialog" aria-modal="true" aria-labelledby="action-title" aria-describedby="action-message">

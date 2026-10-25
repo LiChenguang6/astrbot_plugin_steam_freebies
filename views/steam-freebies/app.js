@@ -288,7 +288,7 @@ function showBili(){
 let biliTestTimer=null;
 function showBiliTestResult(value){
   if(!value)return;
-  $('bili-test-status').textContent=(value.notice||'')+(value.eligible!==undefined?` · 符合推送筛选 ${value.eligible} 条`:'')+
+  $('bili-test-status').textContent=(value.notice||'')+(value.eligible!==undefined?` · 符合当前严格筛选 ${value.eligible} 个 Steam AppID`:'')+
      ((value.errors||[]).length?` · 错误：${value.errors.join('；')}`:'');
   const items=(value.items||[]).map(it=>{
     const card=e('div',undefined,'activity-item');
@@ -296,7 +296,8 @@ function showBiliTestResult(value){
     if(it.url){const a=e('a','B站来源 ↗');a.href=it.url;a.target='_blank';a.rel='noopener noreferrer';left.append(a);}
     if(it.steam_url){const a=e('a','Steam ↗');a.href=it.steam_url;a.target='_blank';a.rel='noopener noreferrer';left.append(a);}
     externalActions(left,it.steam_url,'Steam 外部访问');externalActions(left,it.url,'B站外部访问');
-    card.append(left,e('span',it.kind==='eligible'?'符合候选':'未通过筛选','pill neutral'));return card;
+    const label={eligible:'100% 折扣候选',skipped:'未通过筛选',source:'数据源状态',error:'动态接口失败'}[it.kind]||'检测记录';
+    card.append(left,e('span',label,'pill neutral'));return card;
   });
   $('bili-test-results').replaceChildren(...(items.length?items:[e('p','尚无符合关键词的近期动态或视频。','empty')]));
 }
