@@ -44,6 +44,8 @@ class Main(Star):
         self.errors = []
         self.last_scan = ""
         self.last_items = 0
+        self.bili_test_task = None
+        self.bili_test_result = {'state': 'idle', 'items': [], 'errors': []}
         self.manual_scan_task = None
 
     async def initialize(self):
@@ -58,6 +60,8 @@ class Main(Star):
             ("POST", "price/unwatch"): self.web_price_unwatch,
             ("POST", "bili/add"): self.web_bili_add,
             ("POST", "bili/remove"): self.web_bili_remove,
+            ("POST", "bili/test"): self.web_bili_test,
+            ("GET", "bili/test/status"): self.web_bili_test_status,
             ("POST", "bili/login/start"): self.web_bili_login_start,
             ("GET", "bili/login/prepare"): self.web_bili_login_prepare,
             ("POST", "bili/login/poll"): self.web_bili_login_poll,
@@ -127,7 +131,10 @@ class Main(Star):
             errors.extend(issues)
             if self.store.settings()['bili_enabled']:
                 try:
-                    tips, issues = await fetch_bilibili_tips(self.store, self.ai_config.effective(), auth=self.bili_auth)
+                    tips, issues = await fetch_bilibili_tips(
+                        self.store, self.ai_config.effective(), auth=self.bili_auth, network=network,
+                        corroborated_appids={int(c['appid']) for c in candidates
+                            if c.get('kind') == 'promo_api' and type(c.get('appid')) is int and c['appid'] > 0})
                     candidates.extend(tips)
                     errors.extend(issues)
                 except Exception as exc:
@@ -144,6 +151,9 @@ class Main(Star):
             self.last_items = len(candidates)
             if candidates:
                 self.store.upsert_games(candidates)
+            # Creator-triggered auto-claims are opt-in and ONLY use pre-approved Steam SubIDs.
+            if self.store.settings()['bili_enabled'] and self.store.settings()['bili_auto_claim_creators']:
+                await self.process_bili_creator_claims(candidates)
             # If all providers failed, don't treat that as an empty successful scan.
             if self.store.settings()['push_enabled']:
                 await self.push_to_groups()
@@ -177,7 +187,7 @@ class Main(Star):
                 kind = {'steam_candidate':'Steam 商店 100% 折扣候选',
                         'paid_to_free':'曾经付费 → 当前免费候选',
                         'watch_price':'关注游戏价格变动',
-                        'bilibili_tip':'B站免费游戏线索 · 待核实',
+                        'bilibili_tip':'B站 Steam 游戏 · 已核查商店',
                         'promo_api':'促销 API / 免费赠送线索',
                         'third_party':'第三方 Steam Key / 活动赠送'}.get(g['kind'],'游戏活动')
                 tip = ('Steam 商店活动需核实是否为永久入库。' if g['kind']=='steam_candidate'
@@ -185,11 +195,20 @@ class Main(Star):
                        else '这是你关注游戏的价格变化，不会自动执行购买或领取。' if g['kind']=='watch_price'
                        else '只是促销或视频线索，需打开链接核实，不能自动领取。' if g['kind'] in ('bilibili_tip','promo_api')
                        else '第三方活动可能需要注册、积分、地区资格或库存，无法通过 ASF 直接领取 Key。')
-                text = (f"🎁 免费游戏发现｜{kind}\n"
-                        f"游戏：{g['name']}\n标价：{g['original_price'] or '未知'}\n"
-                        f"截止：{g['end_date'] or '以活动页面为准'}\n"
-                        f"领取页面：{g['url']}\n{tip}\n"
-                        f"来源提示：{g['confidence']}")
+                if g['kind'] == 'bilibili_tip':
+                    # Both links always carried in the QQ message; source is never overwritten by Steam URL.
+                    text = (f"🎮 B站 Steam 免费活动｜{g['source']}\n"
+                            f"内容：{g['name']}\n"
+                            f"Steam：{g['steam_url']}\n"
+                            f"B站原始来源：{g['bili_source_url']}\n"
+                            f"核验：{g['confidence']}\n"
+                            "可领取不等于已永久入库；ASF 只领取预先批准的免费 SubID。")
+                else:
+                    text = (f"🎁 免费游戏发现｜{kind}\n"
+                            f"游戏：{g['name']}\n标价：{g['original_price'] or '未知'}\n"
+                            f"截止：{g['end_date'] or '以活动页面为准'}\n"
+                            f"领取页面：{g['url']}\n{tip}\n"
+                            f"来源提示：{g['confidence']}")
                 try:
                     await self.send_group(target, text)
                 except Exception as exc:
@@ -212,7 +231,8 @@ class Main(Star):
                     msg = (f"🎮 Steam 自动领取结果｜{status}\n"
                            f"游戏：{ev['name']}\nSubID：{ev['subid']}\n"
                            f"ASF 响应：{ev['result'][:220]}\n"
-                           f"商店：{ev['url']}\n"
+                           f"商店：{ev['url']}\n" +
+                           (f"B站原始来源：{ev['bili_source_url']}\n" if ev.get('bili_source_url') else '') +
                            '最终是否永久入库，请在 Steam 账号许可证中核实。')
                     try:
                         await self.send_group(target,msg)
@@ -226,8 +246,10 @@ class Main(Star):
     async def do_claim(self, key):
         async with self.claim_lock:
             row = self.store.get_game(key)
-            if not row or row["kind"] != "steam_candidate" or not row["approved_subid"]:
-                raise ValueError("先在面板为 Steam 商店活动人工确认并批准正确 SubID")
+            creator_bili = bool(row and row['kind'] == 'bilibili_tip' and row['bili_origin'] == 'creator'
+                               and row['steam_url'] == f'https://store.steampowered.com/app/{row["appid"]}/')
+            if not row or not row['approved_subid'] or (row['kind'] != 'steam_candidate' and not creator_bili):
+                raise ValueError('请先人工核实并批准 Steam 候选或指定 UP 主活动的有效免费包 SubID')
             subid = int(row["approved_subid"])
             # The on-demand manager starts ASF only for an actual approved free SubID.
             # Third-party Key promotions never reach this route.
@@ -245,6 +267,17 @@ class Main(Star):
         await self.push_claim_events()
         return {'status':status,'result':result,
                 'notice':'ASF 的返回不代表 Steam 永久许可证已经得到核验'}
+
+    async def process_bili_creator_claims(self, candidates):
+        """Only trusted creator-origin links; prior explicit approval of Steam free package required.
+
+        We never infer SubID from AppID, dynamic text or external website links.
+        """
+        for game in self.store.pending_bili_claims():
+            try:
+                await self.do_claim(game['key'])
+            except Exception as exc:
+                self.errors.append(f'B站关联的已批准包领取失败：{type(exc).__name__}')
 
     async def process_approved_claims(self):
         for row in self.store.pending_claims():
@@ -265,6 +298,7 @@ class Main(Star):
             "games": self.store.games(),
             "prices": self.store.price_overview(),
             "bili_creators": self.store.bili_creators(),
+            "bili_test": self.bili_test_result,
             "ai": self.ai_config.public(),
             "bili_login": self.bili_auth.status(),
             "steam_network": proxy_status(self.store.settings()),
@@ -345,6 +379,37 @@ class Main(Star):
     async def web_bili_remove(self):
         body = await request.json(default={})
         return json_response(self.store.remove_bili_creator(body.get('mid')))
+
+    async def web_bili_test(self):
+        body = await request.json(default={})
+        mid = body.get('mid')
+        if type(mid) is not int or mid not in {x['mid'] for x in self.store.bili_creators()}:
+            raise ValueError('请先订阅要测试的 UP 主')
+        if self.bili_test_task and not self.bili_test_task.done():
+            raise ValueError('上一次 UP 主测试仍在进行')
+        self.bili_test_result = {'state': 'running', 'mid': mid, 'items': [], 'errors': [],
+                                 'notice': '正在读取视频和动态、提取 Steam 链接并核验（只测试，不推送、不领取）'}
+        self.bili_test_task = asyncio.create_task(self._run_bili_test(mid), name='bili-test')
+        return json_response({'ok': True, 'notice': '测试已在后台启动，请查看检测结果'})
+
+    async def _run_bili_test(self, mid):
+        report=[]
+        try:
+            events, errors = await fetch_bilibili_tips(
+                self.store, auth=self.bili_auth, network=SteamNetwork(self.store.settings()),
+                preview=True, creator_mid=mid, report=report)
+            self.bili_test_result = {'state':'done', 'mid':mid, 'items':report[:30],
+                                     'eligible':len(events), 'errors':errors[:8],
+                                     'notice':'检测完成；本次测试未发送 QQ，也未调用 ASF 或 AI'}
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.bili_test_result = {'state':'failed', 'mid':mid, 'items':report[:30],
+                                     'errors':[f'测试失败：{type(exc).__name__}'],
+                                     'notice':'请检查容器访问 B站和 Steam 的网络'}
+
+    async def web_bili_test_status(self):
+        return json_response(self.bili_test_result)
 
     async def web_bili_login_start(self):
         return json_response(self.bili_auth.qr_begin())

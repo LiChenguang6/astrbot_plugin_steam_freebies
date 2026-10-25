@@ -59,19 +59,23 @@ async function apiAction(endpoint, body, ok){
 function makeGame(game){
   const card=e('article',undefined,'game');
   const top=e('div',undefined,'game-top');
-  top.append(e('span',({steam_candidate:'Steam 商店折扣候选',third_party:'第三方赠 Key / 活动',paid_to_free:'付费转免费候选',promo_api:'促销 API 线索',watch_price:'关注价格变化',bilibili_tip:'B站待核验线索'}[game.kind]||'未知活动'),game.kind==='third_party'?'chip':'chip steam'));
+  top.append(e('span',({steam_candidate:'Steam 商店折扣候选',third_party:'第三方赠 Key / 活动',paid_to_free:'付费转免费候选',promo_api:'促销 API 线索',watch_price:'关注价格变化',bilibili_tip:'B站 Steam 已核验候选'}[game.kind]||'未知活动'),game.kind==='third_party'?'chip':'chip steam'));
   top.append(e('span',game.source,'meta')); card.append(top);
   card.append(e('div',game.name,'game-title'),e('div',`原价：${game.original_price||'未知'} · 截止：${game.end_date||'以活动页为准'}`,'meta'));
   card.append(e('p',game.confidence));
   const actions=e('div',undefined,'actions');
+  if(game.kind==='bilibili_tip'){
+    if(game.steam_url){const a=e('a','Steam 商店 ↗');a.href=game.steam_url;a.target='_blank';a.rel='noopener noreferrer';actions.append(a);}
+    if(game.bili_source_url){const a=e('a','B站原始来源 ↗');a.href=game.bili_source_url;a.target='_blank';a.rel='noopener noreferrer';actions.append(a);}
+  }
   const url=e('a','打开领取页面 ↗');url.href=game.url;url.target='_blank';url.rel='noopener noreferrer';actions.append(url);
-  if(game.kind==='steam_candidate'){
+  if(game.kind==='steam_candidate'||(game.kind==='bilibili_tip'&&game.bili_origin==='creator')){
     const approve=e('button','批准免费包 SubID','btn ghost');
     approve.addEventListener('click',async()=>{
-      const input=await askUser('输入已核实的 Free-to-Keep 永久免费包 SubID。仅填写当前有效的免费包；错误的 SubID 不能自动辨别。', {input:true, value:game.approved_subid||'', title:'批准免费包', confirmText:'批准 SubID'});
+      const input=await askUser('输入你从 Steam 官方页面独立核实的 Free-to-Keep 免费 SubID。APP ID 不是 SubID；B站发出的数字也不可信，不会自动批准。', {input:true, value:game.approved_subid||'', title:'批准免费包', confirmText:'批准 SubID'});
       if(input===null)return;
       if(!/^\d{1,10}$/.test(input)||Number(input)<1||Number(input)>2147483647){toast('SubID 必须是有效正整数');return;}
-      await apiAction('approve',{key:game.key,subid:Number(input)},'SubID 已批准，若启用自动领取将在下次扫描尝试。');
+      await apiAction('approve',{key:game.key,subid:Number(input)},'SubID 已批准；若启用相应的自动领取开关，将在下次扫描尝试。');
     }); actions.append(approve);
     if(game.approved_subid){
       const claim=e('button',`通过 ASF 领取 · ${game.approved_subid}`,'btn primary');
@@ -187,6 +191,10 @@ function render(){
   $('push-watch-prices').checked=data.settings.push_watch_prices;
   $('bili-enabled').checked=data.settings.bili_enabled;
   $('push-bilibili').checked=data.settings.push_bilibili;
+  $('bili-discovery-mode').value=data.settings.bili_discovery_mode||'creators';
+  $('bili-push-creators').checked=data.settings.bili_push_creators!==false;
+  $('bili-push-search').checked=Boolean(data.settings.bili_push_search_verified);
+  $('bili-auto-claim').checked=Boolean(data.settings.bili_auto_claim_creators);
   $('bili-ai-enabled').checked=data.settings.bili_ai_enabled;
   $('bili-ai-calls').value=String(data.settings.bili_ai_calls??2);
   $('steam-proxy-mode').value=data.settings.steam_proxy_mode||'auto';
@@ -232,9 +240,36 @@ function showBili(){
     const item=e('div',undefined,'activity-item');
     const left=e('div');left.append(e('strong',creator.name),e('small',`UID: ${creator.mid}`));
     const rm=e('button','取消订阅','btn ghost');rm.type='button';rm.addEventListener('click',()=>apiAction('bili/remove',{mid:creator.mid}));
-    item.append(left,rm);return item;
+    const test=e('button','测试近期视频/动态','btn ghost');test.type='button';
+    test.addEventListener('click',async()=>{
+      const result=await apiAction('bili/test',{mid:creator.mid},'已开始检查该 UP 主近期视频、动态和 Steam 链接；仅测试，不发 QQ、不领取');
+      if(result)beginBiliTestPolling();
+    });
+    item.append(left,test,rm);return item;
   });
   $('bili-creators').replaceChildren(...(rows.length?rows:[e('p','还没有订阅的 UP 主。','empty')]));
+}
+let biliTestTimer=null;
+function showBiliTestResult(value){
+  if(!value)return;
+  $('bili-test-status').textContent=(value.notice||'')+(value.eligible!==undefined?` · 符合推送筛选 ${value.eligible} 条`:'')+
+     ((value.errors||[]).length?` · 错误：${value.errors.join('；')}`:'');
+  const items=(value.items||[]).map(it=>{
+    const card=e('div',undefined,'activity-item');
+    const left=e('div');left.append(e('strong',it.name),e('small',it.detail||''));
+    if(it.url){const a=e('a','B站来源 ↗');a.href=it.url;a.target='_blank';a.rel='noopener noreferrer';left.append(a);}
+    if(it.steam_url){const a=e('a','Steam ↗');a.href=it.steam_url;a.target='_blank';a.rel='noopener noreferrer';left.append(a);}
+    card.append(left,e('span',it.kind==='eligible'?'符合候选':'未通过筛选','pill neutral'));return card;
+  });
+  $('bili-test-results').replaceChildren(...(items.length?items:[e('p','尚无符合关键词的近期动态或视频。','empty')]));
+}
+function beginBiliTestPolling(){
+  if(biliTestTimer!==null)clearInterval(biliTestTimer);
+  biliTestTimer=setInterval(async()=>{
+    try{const state=await bridge.apiGet('bili/test/status');showBiliTestResult(state);
+      if(state.state!=='running'){clearInterval(biliTestTimer);biliTestTimer=null;}}
+    catch(err){$('bili-test-status').textContent='检查测试进度失败：'+err.message;clearInterval(biliTestTimer);biliTestTimer=null;}
+  },1800);
 }
 $('ai-save').addEventListener('click',async()=>{
   const key=$('ai-key').value.trim();
@@ -445,6 +480,10 @@ $('save').addEventListener('click',()=>apiAction('settings',{
   price_monitor_enabled:$('price-monitor').checked,push_paid_to_free:$('push-convert').checked,
   push_watch_prices:$('push-watch-prices').checked,
   bili_enabled:$('bili-enabled').checked,push_bilibili:$('push-bilibili').checked,
+  bili_discovery_mode:$('bili-discovery-mode').value,
+  bili_push_creators:$('bili-push-creators').checked,
+  bili_push_search_verified:$('bili-push-search').checked,
+  bili_auto_claim_creators:$('bili-auto-claim').checked,
   bili_ai_enabled:$('bili-ai-enabled').checked,bili_ai_calls:Number($('bili-ai-calls').value),
   bili_keywords:$('bili-keywords').value.trim(),
   steam_proxy_mode:$('steam-proxy-mode').value,steam_proxy_url:$('steam-proxy-url').value.trim(),

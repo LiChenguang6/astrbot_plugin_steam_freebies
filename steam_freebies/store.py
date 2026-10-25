@@ -20,6 +20,11 @@ DEFAULT_SETTINGS = {
     "push_watch_prices": True,
     "bili_enabled": False,
     "push_bilibili": False,
+    "bili_discovery_mode": "creators",  # creators, search, both
+    "bili_push_creators": True,
+    "bili_push_search_verified": False,  # strict multi-source gate; opt in
+    "bili_auto_claim_creators": False,  # requires approved SubID and existing ASF approval
+
     "bili_keywords": "Steam 喜加一,Steam 永久免费,Steam 限时免费",
     "bili_ai_enabled": False,
     "bili_ai_calls": 2,
@@ -49,7 +54,9 @@ class Store:
           kind TEXT NOT NULL, appid INTEGER NOT NULL, url TEXT NOT NULL,
           original_price TEXT, end_date TEXT, confidence TEXT,
           first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
-          approved_subid INTEGER NOT NULL DEFAULT 0
+          approved_subid INTEGER NOT NULL DEFAULT 0,
+          steam_url TEXT NOT NULL DEFAULT '', bili_source_url TEXT NOT NULL DEFAULT '',
+          bili_origin TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS sent(
           target_id INTEGER NOT NULL, game_key TEXT NOT NULL,
@@ -88,6 +95,11 @@ class Store:
           bvid TEXT PRIMARY KEY, seen_at TEXT NOT NULL
         );
         """)
+        # Non-destructive schema upgrade on existing NAS SQLite files.
+        columns={r[1] for r in self.db.execute('PRAGMA table_info(games)')}
+        for name in ('steam_url','bili_source_url','bili_origin'):
+            if name not in columns:
+                self.db.execute(f"ALTER TABLE games ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
         # v0.6 migration: old auto-sampled rows must not remain in the watchlist.
         # Manual watches and their price history are preserved.
         with self.db:
@@ -111,9 +123,11 @@ class Store:
         if "scan_minutes" in values and (type(values["scan_minutes"]) is not int or not 30 <= values["scan_minutes"] <= 360):
             raise ValueError("扫描间隔须为 30–360 分钟")
         for k in ("push_enabled", "push_steam", "push_third_party", "push_claim_results", "auto_claim_enabled", "price_monitor_enabled", "push_paid_to_free",
-                  "push_watch_prices", "bili_enabled", "push_bilibili", "bili_ai_enabled", "steam_search_fallback"):
+                  "push_watch_prices", "bili_enabled", "push_bilibili", "bili_push_creators", "bili_push_search_verified", "bili_auto_claim_creators", "bili_ai_enabled", "steam_search_fallback"):
             if k in values and type(values[k]) is not bool:
                 raise ValueError(f"{k} 必须是布尔值")
+        if 'bili_discovery_mode' in values and values['bili_discovery_mode'] not in ('creators','search','both'):
+            raise ValueError('请选择指定 UP 主、搜索或两者同时监控')
         if 'steam_proxy_mode' in values and values['steam_proxy_mode'] not in ('auto','direct','proxy'):
             raise ValueError('Steam 加速模式无效')
         if 'steam_proxy_url' in values:
@@ -160,13 +174,16 @@ class Store:
                 if not g.get("key") or not g.get("name"):
                     continue
                 cursor = self.db.execute("""
-                  INSERT INTO games(key,name,source,kind,appid,url,original_price,end_date,confidence,first_seen,last_seen)
-                  VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                  INSERT INTO games(key,name,source,kind,appid,url,original_price,end_date,confidence,first_seen,last_seen,steam_url,bili_source_url,bili_origin)
+                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                   ON CONFLICT(key) DO UPDATE SET name=excluded.name,url=excluded.url,
                     original_price=excluded.original_price,end_date=excluded.end_date,
-                    confidence=excluded.confidence,last_seen=excluded.last_seen
+                    confidence=excluded.confidence,last_seen=excluded.last_seen,
+                    steam_url=excluded.steam_url,bili_source_url=excluded.bili_source_url,
+                    bili_origin=excluded.bili_origin
                   """, (g["key"],g["name"],g["source"],g["kind"],int(g.get("appid") or 0),g["url"],
-                          g.get("original_price",""),g.get("end_date",""),g.get("confidence",""),now,now))
+                          g.get("original_price",""),g.get("end_date",""),g.get("confidence",""),now,now,
+                          g.get('steam_url',''),g.get('bili_source_url',''),g.get('bili_origin','')))
                 added += int(cursor.rowcount > 0)  # SQL upsert count, not "new" count
         return added
 
@@ -174,8 +191,10 @@ class Store:
         game = self.db.execute("SELECT * FROM games WHERE key=?", (key,)).fetchone()
         if not game:
             raise ValueError("活动不存在")
-        if game["kind"] != "steam_candidate":
-            raise ValueError("第三方赠送活动不允许直接调用 Steam addlicense")
+        trusted_bili = (game['kind'] == 'bilibili_tip' and game['bili_origin'] == 'creator'
+                        and game['steam_url'] == f'https://store.steampowered.com/app/{game["appid"]}/')
+        if game['kind'] != 'steam_candidate' and not trusted_bili:
+            raise ValueError('仅 Steam 官方候选或你订阅 UP 的 Steam 已核查游戏可批准 SubID')
         if type(subid) is not int or not 1 <= subid <= 2_147_483_647:
             raise ValueError("请填写正确的免费领取包 SubID")
         with self.db:
@@ -195,11 +214,11 @@ class Store:
         query = """
          SELECT g.* FROM games g LEFT JOIN sent s ON s.game_key=g.key AND s.target_id=?
          WHERE s.game_key IS NULL AND g.last_seen>=?
-           AND ((g.kind='steam_candidate' AND ?=1) OR (g.kind='third_party' AND ?=1) OR (g.kind='paid_to_free' AND ?=1) OR (g.kind='watch_price' AND ?=1) OR (g.kind='bilibili_tip' AND ?=1) OR (g.kind='promo_api' AND ?=1))
+           AND ((g.kind='steam_candidate' AND ?=1) OR (g.kind='third_party' AND ?=1) OR (g.kind='paid_to_free' AND ?=1) OR (g.kind='watch_price' AND ?=1) OR (g.kind='bilibili_tip' AND ?=1 AND ((g.bili_origin='creator' AND ?=1) OR (g.bili_origin='search' AND ?=1))) OR (g.kind='promo_api' AND ?=1))
          ORDER BY g.first_seen DESC LIMIT ?"""
         from datetime import timedelta
         since=(datetime.now(timezone.utc)-timedelta(hours=48)).isoformat(timespec='seconds')
-        return [dict(r) for r in self.db.execute(query, (target_id,since,int(opts['push_steam']),int(opts['push_third_party']),int(opts['push_paid_to_free']),int(opts['push_watch_prices']),int(opts['push_bilibili']),int(opts['push_steam']),max_rows))]
+        return [dict(r) for r in self.db.execute(query, (target_id,since,int(opts['push_steam']),int(opts['push_third_party']),int(opts['push_paid_to_free']),int(opts['push_watch_prices']),int(opts['push_bilibili']),int(opts['bili_push_creators']),int(opts['bili_push_search_verified']),int(opts['push_steam']),max_rows))]
 
     def marked(self, target_id, key):
         with self.db:
@@ -211,6 +230,16 @@ class Store:
           WHERE g.kind='steam_candidate' AND g.approved_subid>0 AND c.game_key IS NULL
           ORDER BY g.first_seen ASC LIMIT 5""")]
 
+    def pending_bili_claims(self):
+        """Only administrator-approved creator items, bounded to recent promotions."""
+        from datetime import timedelta
+        since=(datetime.now(timezone.utc)-timedelta(hours=48)).isoformat(timespec='seconds')
+        return [dict(x) for x in self.db.execute("""SELECT g.* FROM games g
+            LEFT JOIN claims c ON c.game_key=g.key AND c.subid=g.approved_subid
+            WHERE g.kind='bilibili_tip' AND g.bili_origin='creator'
+            AND g.approved_subid>0 AND g.last_seen>=? AND c.game_key IS NULL
+            ORDER BY g.first_seen DESC LIMIT 3""", (since,))]
+
     def claim_record(self, key, subid, status, result):
         now=utcnow()
         with self.db:
@@ -220,7 +249,7 @@ class Store:
 
     def pending_claim_events(self, target_id, limit=20):
         return [dict(x) for x in self.db.execute("""
-            SELECT e.*,g.name,g.url FROM claim_events e JOIN games g ON g.key=e.game_key
+            SELECT e.*,g.name,g.url,g.steam_url,g.bili_source_url FROM claim_events e JOIN games g ON g.key=e.game_key
             LEFT JOIN claim_event_sent s ON s.event_id=e.id AND s.target_id=?
             WHERE s.event_id IS NULL AND e.at>=? ORDER BY e.id ASC LIMIT ?""",
             (target_id,(datetime.now(timezone.utc)-__import__('datetime').timedelta(days=2)).isoformat(timespec='seconds'),limit))]

@@ -43,7 +43,7 @@
 <label class="toggle-line"><span><strong>我确认这是自己的账号，并在可信的 HTTPS 或受保护的本地连接中操作</strong><small>导入的 Cookie 只用于本插件向 B站查询公开信息；如果怀疑泄露，请立即在 B站官方安全中心退出其他登录设备。</small></span><input id="bili-manual-trust" type="checkbox"></label>
 <div class="bili-action-row"><button class="btn primary" id="bili-manual-import" type="button">导入并验证会话</button><button class="btn ghost" id="bili-manual-check" type="button">检查当前会话有效性</button></div>
 <p class="hint" id="bili-manual-status" role="status" aria-live="polite">手动导入前请在 B站官网正常登录；不会向页面回传 Cookie。</p>
-</div><div class="bili-login-tabs" role="group" aria-label="选择 B站登录方式"><button type="button" id="bili-mode-qr-tab">手机扫码登录</button><button type="button" id="bili-mode-sms-tab">短信验证码登录</button></div>
+</div>
 <div id="bili-mode-qr" class="bili-login-mode" hidden><p class="subtitle">二维码使用 B站官方接口返回的原始链接，仅用于向本 NAS 的 AstrBot 授权 B站登录会话。若手机提示登录环境存在风险或拒绝授权，请取消操作；本插件不能解除 B站风控。无需登录也可尝试监控公开投稿。</p>
 <button class="btn primary" id="bili-login-start" type="button">生成 B站登录二维码</button><p class="hint" id="bili-qr-progress" role="status" aria-live="polite">点击按钮申请官方登录二维码</p>
 <div class="bili-qr-block" id="bili-qr-box" hidden><div id="bili-qr-grid" class="bili-qr-grid" role="img" aria-label="哔哩哔哩官方登录二维码"></div><div><strong>请在手机 B站 App 内核对授权风险</strong><p class="subtitle" id="bili-qr-hint">二维码有效期约 180 秒</p><button class="btn ghost" id="bili-qr-check" type="button">↻ 检查扫码结果</button></div></div></div>
@@ -57,15 +57,23 @@
 </div>
 <p class="subtitle">安全提示：登录会话具有账号访问权限，请只在可信 HTTPS 的 AstrBot 管理后台操作。验证码和手机号码不写入持久设置，也不要发送到 QQ 群。</p>
 <div class="settings-divider"></div>
-<div class="bili-step"><span class="step-number">02</span><div><h3>关注哪些 UP 主</h3><p class="subtitle">输入视频链接，自动识别作者；或者直接填写 UID。最多订阅 10 位。</p></div></div>
+<div class="bili-step"><span class="step-number">02</span><div><h3>指定 UP 主 · 视频与动态</h3><p class="subtitle">UP 主来源独立于关键词搜索；测试会读取近期动态、视频简介、Steam 链接及商店状态，不推送也不领取。</p></div></div>
 <div class="two-col"><label class="field">B站视频 BV 链接或 BV 号<input id="bili-video" type="text" maxlength="350" placeholder="例如 https://www.bilibili.com/video/BV16mnt6iEiZ/"></label><div class="field"><span>按视频订阅</span><button id="bili-add" class="btn primary" type="button">＋ 订阅视频作者</button></div></div>
 <details class="bili-advanced"><summary>无法读取视频作者？改用 UP 主 UID</summary><div class="two-col"><label class="field">UP 主 UID<input id="bili-uid" type="number" min="1" placeholder="数字 UID"></label><div class="field"><span>备用入口</span><button id="bili-uid-add" class="btn ghost" type="button">＋ 添加 UID</button></div></div></details>
-<p class="hint" id="bili-status">还没有订阅 UP 主。</p><div id="bili-creators" class="activity-list"><p class="empty">暂无订阅</p></div>
+<p class="hint" id="bili-status">还没有订阅 UP 主。</p>
+<div class="panel" style="padding:12px;margin-top:10px"><strong>UP 主识别测试（不消耗 AI Token / 不发 QQ / 不执行 ASF）</strong>
+<p class="hint" id="bili-test-status" role="status" aria-live="polite">先订阅 UP 主，再点击对应的「测试近期视频/动态」。</p>
+<div id="bili-test-results" class="activity-list"></div></div><div id="bili-creators" class="activity-list"><p class="empty">暂无订阅</p></div>
 <div class="settings-divider"></div>
 <div class="bili-step"><span class="step-number">03</span><div><h3>搜索与 QQ 推送</h3><p class="subtitle">按关键词搜索公开投稿。单次扫描只检索部分关键词；过于频繁仍可能被 B站限流。</p></div></div>
+<label class="field">B站发现范围
+<select id="bili-discovery-mode"><option value="creators">只查指定 UP 主（推荐）</option><option value="search">只查关键词搜索</option><option value="both">同时查询 UP 主与关键词</option></select></label>
 <label class="field">搜索关键词（逗号分隔，最多 5 个）<input id="bili-keywords" type="text" maxlength="140" placeholder="Steam 喜加一,Steam 限时免费,Steam 永久免费"></label>
 <label class="toggle-line" id="bili-toggle-discovery"><span><strong>B站线索发现</strong><small>订阅 UP 主和搜索关键词，默认关闭；接口被风控时不会跳过验证</small></span><input id="bili-enabled" type="checkbox"></label>
-<label class="toggle-line" id="bili-toggle-push"><span><strong>B站线索发送到 QQ</strong><small>视频只是线索，不能证明游戏可永久领取</small></span><input id="push-bilibili" type="checkbox"></label>
+<label class="toggle-line" id="bili-toggle-push"><span><strong>允许 B站合格线索发送到 QQ（总开关）</strong><small>无明确 Steam 游戏链接或 Steam 商店未核实的内容一律不推送</small></span><input id="push-bilibili" type="checkbox"></label>
+<label class="toggle-line"><span><strong>推送指定 UP 主的 Steam 免费游戏</strong><small>检测视频/动态；需官方商店显示当前免费或 100% 折扣，同时附 Steam 与 B站源链接</small></span><input id="bili-push-creators" type="checkbox"></label>
+<label class="toggle-line"><span><strong>推送搜索的严格核验结果</strong><small>默认关闭；必须 Steam 当前 100% 折扣（原价大于 0）且 ITAD 促销 API 独立佐证同一 AppID。仍不等于账户入库。</small></span><input id="bili-push-search" type="checkbox"></label>
+<label class="toggle-line"><span><strong>指定 UP 主关联的已批准 SubID 自动尝试 ASF 领取</strong><small>默认关闭。仅限你已在 Steam 活动卡片中明确批准过的免费包 SubID；不从 AppID 猜包，不自动兑换第三方 Key。</small></span><input id="bili-auto-claim" type="checkbox"></label>
 <div class="bili-action-row"><button class="btn primary" id="bili-save" type="button">保存 B站监控设置</button><span class="subtitle">关闭 B站时不发起 B站 API 请求</span></div>
 <div class="settings-divider"></div>
 <details class="bili-advanced" id="bili-ai-details"><summary>04 · 高级选项：AI 辅助识别（默认不耗 Token）</summary>
@@ -107,7 +115,7 @@
 <p class="subtitle">建议流程：创建本地 Bot 配置 → 保存托管模式 → 启动 ASF → 启用 Bot → 输入 Steam 密码（若需要）→ 启动 Bot → 收到 Steam Guard 要求时提交验证码 → 再次启动 Bot。登录授权仍需由账号持有人完成。密码与验证码不进入 QQ 推送、历史记录或 GitHub。</p>
 </div></div></section>
 <section id="qq" class="section"><div class="section-title"><div><span class="eyebrow">DELIVERY</span><h2>QQ群组推送</h2></div></div><p class="subtitle">以 AstrBot 管理员身份在目标 QQ 群发送 <code>/喜加一绑定</code>；发送 <code>/喜加一解绑</code> 可以暂停。QQ 官方机器人需要具备主动发送权限。</p><p class="subtitle">测试消息现在可以重复发送（同群间隔 30 秒），正式活动仍然按群去重。没有新的活动时，扫描成功也不会重复推送之前的游戏。</p><div id="target-list" class="activity-list"><p class="empty">暂无已绑定群</p></div></section>
-<footer>STEAM FREEBIES <b>v0.6.3</b> · 仅展示促销/赠送线索，真实库存、资格及永久免费领取请以提供方为准。</footer>
+<footer>STEAM FREEBIES <b>v0.7.0</b> · 仅展示促销/赠送线索，真实库存、资格及永久免费领取请以提供方为准。</footer>
 </main></div>
 <div id="action-overlay" class="dialog-overlay" hidden>
   <div class="dialog-panel" role="dialog" aria-modal="true" aria-labelledby="action-title" aria-describedby="action-message">
