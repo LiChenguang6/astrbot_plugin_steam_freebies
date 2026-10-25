@@ -6,6 +6,7 @@ and GamerPower destination URLs are retained (including attribution tags).
 import re
 import asyncio
 import aiohttp
+from .steam_network import SteamNetwork
 
 ITAD_BASE = 'https://api.isthereanydeal.com'
 STEAM_APP = re.compile(r'(?:store\.steampowered\.com/app/|steamcommunity\.com/app/)(\d{1,10})(?:/|\b)', re.I)
@@ -85,9 +86,10 @@ def parse_itad_deals(data):
     return result
 
 
-async def fetch_itad_promotions(api_key):
+async def fetch_itad_promotions(api_key, network=None):
     if not api_key:
         return [], []
+    network = network or SteamNetwork()
     result, errors = [], []
     headers = {'ITAD-API-Key': api_key, 'User-Agent': 'AstrBot-Steam-Freebies/0.6'}
     timeout = aiohttp.ClientTimeout(total=18)
@@ -135,11 +137,10 @@ async def fetch_itad_promotions(api_key):
                 continue
             checked += 1
             try:
-                async with session.get('https://store.steampowered.com/api/appdetails',
-                        params={'appids': row['appid'], 'cc': 'cn', 'l': 'schinese'},
-                        timeout=aiohttp.ClientTimeout(total=9)) as resp:
-                    resp.raise_for_status()
-                    details = await resp.json(content_type=None)
+                async with network.session() as steam_session:
+                    details = await network.get_json(steam_session,
+                        'https://store.steampowered.com/api/appdetails',
+                        params={'appids': row['appid'], 'cc': 'cn', 'l': 'schinese'}, timeout=9)
                 wrapper = details.get(str(row['appid'])) if isinstance(details, dict) else None
                 entry = wrapper.get('data') if isinstance(wrapper, dict) else None
                 if isinstance(entry, dict) and entry.get('type') == 'game':

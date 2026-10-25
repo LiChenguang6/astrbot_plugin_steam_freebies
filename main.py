@@ -13,6 +13,8 @@ from .steam_freebies.asf import claim_sub
 from .steam_freebies.manager import ManagedASF
 from .steam_freebies.embedded_ui import EmbeddedUI
 from .steam_freebies.sources import fetch_candidates
+from .steam_freebies.steam_network import SteamNetwork, proxy_status
+from .steam_freebies.bili_auth import BiliAuth
 from .steam_freebies.promotions import fetch_itad_promotions
 from .steam_freebies.bilibili import fetch_bilibili_tips, resolve_video_owner, extract_bvid
 from .steam_freebies.ai_config import AIConfig
@@ -32,6 +34,9 @@ class Main(Star):
         self.asf_manager = ManagedASF(data_dir / 'asf-manager')
         self.asf_ui = EmbeddedUI(self.asf_manager)
         self.ai_config = AIConfig(data_dir)
+        self.bili_auth = BiliAuth(data_dir)
+        self.test_sent_at = {}
+        self.last_test_result = {}
         self.scan_lock = asyncio.Lock()
         self.claim_lock = asyncio.Lock()
         self.claim_notifications_lock = asyncio.Lock()
@@ -52,6 +57,9 @@ class Main(Star):
             ("POST", "price/unwatch"): self.web_price_unwatch,
             ("POST", "bili/add"): self.web_bili_add,
             ("POST", "bili/remove"): self.web_bili_remove,
+            ("POST", "bili/login/start"): self.web_bili_login_start,
+            ("POST", "bili/login/poll"): self.web_bili_login_poll,
+            ("POST", "bili/logout"): self.web_bili_logout,
             ("POST", "ai/settings"): self.web_ai_settings,
             ("POST", "asf/install"): self.web_asf_install,
             ("POST", "asf/start"): self.web_asf_start,
@@ -99,26 +107,27 @@ class Main(Star):
             # ITAD's giveaway/deal APIs add structured Steam promotion coverage.
             itad_key = os.getenv('ASTR_STEAM_ITAD_API_KEY', '')
             candidates, errors = [], []
+            network = SteamNetwork(self.store.settings())
             if itad_key:
                 try:
-                    more, issues = await fetch_itad_promotions(itad_key)
+                    more, issues = await fetch_itad_promotions(itad_key, network=network)
                     candidates.extend(more)
                     errors.extend(issues)
                 except Exception as exc:
                     errors.append(f'ITAD 促销源失败：{type(exc).__name__}')
-            more, issues = await fetch_candidates()
+            more, issues = await fetch_candidates(network=network, search_fallback=self.store.settings()['steam_search_fallback'])
             candidates.extend(more)
             errors.extend(issues)
             if self.store.settings()['bili_enabled']:
                 try:
-                    tips, issues = await fetch_bilibili_tips(self.store, self.ai_config.effective())
+                    tips, issues = await fetch_bilibili_tips(self.store, self.ai_config.effective(), auth=self.bili_auth)
                     candidates.extend(tips)
                     errors.extend(issues)
                 except Exception as exc:
                     errors.append(f'B站数据源失败：{type(exc).__name__}')
             if self.store.settings()['price_monitor_enabled']:
                 try:
-                    changes, price_errors = await monitor_prices(self.store)
+                    changes, price_errors = await monitor_prices(self.store, network=network)
                     candidates.extend(changes)
                     errors.extend(price_errors)
                 except Exception as exc:
@@ -250,6 +259,11 @@ class Main(Star):
             "prices": self.store.price_overview(),
             "bili_creators": self.store.bili_creators(),
             "ai": self.ai_config.public(),
+            "bili_login": self.bili_auth.status(),
+            "steam_network": proxy_status(self.store.settings()),
+            "test_results": self.last_test_result,
+            "delivery_last": self.store.delivery_overview(),
+            "pending_counts": {str(t["id"]): len(self.store.pending_pushes(t["id"],max_rows=100)) for t in targets if t["enabled"]},
             "itad_configured": bool(os.getenv("ASTR_STEAM_ITAD_API_KEY")),
             "last_scan": self.last_scan,
             "last_items": self.last_items,
@@ -300,7 +314,7 @@ class Main(Star):
         body = await request.json(default={})
         video = extract_bvid(body.get('video'))
         if video:
-            mid, name = await resolve_video_owner(video)
+            mid, name = await resolve_video_owner(video, auth=self.bili_auth)
         else:
             mid, name = body.get('mid'), str(body.get('name') or '')
             if type(mid) is not int or mid <= 0:
@@ -311,6 +325,15 @@ class Main(Star):
     async def web_bili_remove(self):
         body = await request.json(default={})
         return json_response(self.store.remove_bili_creator(body.get('mid')))
+
+    async def web_bili_login_start(self):
+        return json_response(await self.bili_auth.qr_start())
+
+    async def web_bili_login_poll(self):
+        return json_response(await self.bili_auth.qr_poll())
+
+    async def web_bili_logout(self):
+        return json_response(self.bili_auth.logout())
 
     async def web_asf_install(self):
         self.asf_manager.install()
@@ -365,13 +388,21 @@ class Main(Star):
         row = next((v for v in self.store.targets() if v["id"] == target_id and v["enabled"]), None)
         if row is None:
             raise ValueError("目标群不存在或已暂停")
-        day = datetime.now(timezone.utc).date().isoformat()
-        key = f"__test__:{day}"
-        if self.store.db.execute("SELECT 1 FROM sent WHERE target_id=? AND game_key=?", (target_id, key)).fetchone():
-            raise ValueError("每群每天最多测试推送一次")
-        await self.send_group(row, "✅ Steam 喜加一插件推送测试成功。")
-        self.store.marked(target_id, key)
-        return json_response({"ok": True})
+        import time
+        clock = time.monotonic()
+        last = self.test_sent_at.get(target_id, 0)
+        if last and clock - last < 30:
+            raise ValueError(f"测试防刷屏：请 {max(1,int(30-(clock-last)))} 秒后再试；正式推送不受影响")
+        try:
+            await self.send_group(row, "✅ Steam 喜加一 QQ 测试消息：当前适配器可主动发送。此消息仅作连通性验证；老活动已去重，不会重复推送。")
+        except Exception as exc:
+            reason = f"{type(exc).__name__}"
+            self.last_test_result[str(target_id)] = {'ok':False, 'at':datetime.now(timezone.utc).isoformat(timespec='seconds'), 'detail':reason}
+            raise ValueError(f"QQ 测试发送失败：{reason}；请核对 NapCat 适配器状态及群主动发送权限") from exc
+        self.test_sent_at[target_id] = clock
+        stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
+        self.last_test_result[str(target_id)] = {'ok':True, 'at':stamp, 'detail':'已提交到 QQ 适配器'}
+        return json_response({'ok':True,'at':stamp,'notice':'QQ 测试已向适配器提交成功。没有新活动时，正式推送不会重复发送旧消息。'})
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("喜加一绑定")

@@ -23,6 +23,9 @@ DEFAULT_SETTINGS = {
     "bili_keywords": "Steam 喜加一,Steam 永久免费,Steam 限时免费",
     "bili_ai_enabled": False,
     "bili_ai_calls": 2,
+    "steam_proxy_mode": "auto",
+    "steam_proxy_url": "",
+    "steam_search_fallback": False,
 }
 
 
@@ -108,9 +111,17 @@ class Store:
         if "scan_minutes" in values and (type(values["scan_minutes"]) is not int or not 30 <= values["scan_minutes"] <= 360):
             raise ValueError("扫描间隔须为 30–360 分钟")
         for k in ("push_enabled", "push_steam", "push_third_party", "push_claim_results", "auto_claim_enabled", "price_monitor_enabled", "push_paid_to_free",
-                  "push_watch_prices", "bili_enabled", "push_bilibili", "bili_ai_enabled"):
+                  "push_watch_prices", "bili_enabled", "push_bilibili", "bili_ai_enabled", "steam_search_fallback"):
             if k in values and type(values[k]) is not bool:
                 raise ValueError(f"{k} 必须是布尔值")
+        if 'steam_proxy_mode' in values and values['steam_proxy_mode'] not in ('auto','direct','proxy'):
+            raise ValueError('Steam 加速模式无效')
+        if 'steam_proxy_url' in values:
+            from .steam_network import validate_proxy_url
+            validate_proxy_url(values['steam_proxy_url'])
+        proposed = {**self.settings(), **values}
+        if proposed['steam_proxy_mode'] == 'proxy' and not proposed['steam_proxy_url']:
+            raise ValueError('请先输入 Steam HTTP 代理地址')
         if 'bili_ai_calls' in values and (type(values['bili_ai_calls']) is not int or values['bili_ai_calls'] not in (0, 1, 2, 3)):
             raise ValueError('AI 每轮调用数仅允许 0–3')
         if 'bili_keywords' in values:
@@ -171,6 +182,11 @@ class Store:
             self.db.execute("UPDATE games SET approved_subid=? WHERE key=?", (subid, key))
             # A different approved package must be allowed to run even if an earlier attempt exists.
             self.db.execute("DELETE FROM claims WHERE game_key=? AND subid<>?", (key, subid))
+
+    def delivery_overview(self):
+        now = utcnow()
+        rows = self.db.execute("SELECT target_id,MAX(sent_at) last_sent FROM sent WHERE game_key NOT LIKE '__test__:%' GROUP BY target_id").fetchall()
+        return {str(r["target_id"]):r["last_sent"] for r in rows}
 
     def pending_pushes(self, target_id, max_rows=10):
         opts=self.settings()

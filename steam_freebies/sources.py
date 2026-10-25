@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 from bs4 import BeautifulSoup
+from .steam_network import SteamNetwork
 
 SEARCH_URL = "https://store.steampowered.com/search/results/"
 GIVEAWAYS_URL = "https://www.gamerpower.com/api/giveaways"
@@ -64,10 +65,11 @@ def parse_gamerpower(data):
     return games
 
 
-async def fetch_candidates():
+async def fetch_candidates(network=None, search_fallback=False):
     timeout = aiohttp.ClientTimeout(total=24)
     headers = {"User-Agent": "Mozilla/5.0 SteamFreebiesAstrBot/0.1"}
     output, errors = [], []
+    network = network or SteamNetwork()
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
         try:
             async with session.get(GIVEAWAYS_URL, params={"platform": "steam", "type": "game"}) as resp:
@@ -79,13 +81,13 @@ async def fetch_candidates():
             output.extend(parse_gamerpower(data))
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, TypeError) as exc:
             errors.append(f"GamerPower: {type(exc).__name__}: {str(exc)[:90]}")
-        # Legacy Steam search page is a last-resort supplement, not the primary discovery API.
-        try:
+        # Optional low-priority fallback: a timeout must not break GamerPower.
+        if search_fallback:
+          try:
             params = {"maxprice": "free", "specials": "1", "infinite": "1", "start": "0", "count": "100", "category1": "998", "l": "schinese"}
-            async with session.get(SEARCH_URL, params=params) as resp:
-                resp.raise_for_status()
-                payload = await resp.json(content_type=None)
+            async with network.session() as steam_session:
+                payload = await network.get_json(steam_session, SEARCH_URL, params=params)
             output.extend(parse_steam_html(str(payload.get("results_html", ""))))
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, TypeError) as exc:
-            errors.append(f"Steam 搜索: {type(exc).__name__}: {str(exc)[:90]}")
+          except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, TypeError) as exc:
+            errors.append(f"Steam 搜索后备源超时或失败：{type(exc).__name__}（可配置代理，或关闭搜索后备源）")
     return output, errors

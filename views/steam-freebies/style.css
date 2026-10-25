@@ -26,3 +26,6 @@
 .asf-native-ui .asf-controls{margin:14px 0;display:flex;flex-wrap:wrap;gap:10px}
 .asf-native-ui .field input[type=password]{width:100%;min-width:0}
 @media(max-width:700px){.asf-native-ui{padding:12px}}
+
+/* v0.6.1 - compact step-by-step Bilibili control, resilient mobile layout */
+.bili-panel{display:flex;flex-direction:column;gap:15px}.bili-step{display:flex;gap:12px;align-items:flex-start;margin:4px 0}.bili-step h3{margin:0 0 6px}.bili-step .subtitle{margin:0}.step-number{min-width:36px;min-height:36px;border-radius:10px;background:rgba(91,130,255,.12);color:#97baff;display:flex;align-items:center;justify-content:center;font-weight:700}.bili-action-row{display:flex;align-items:center;flex-wrap:wrap;gap:9px}.bili-advanced{border:1px solid rgba(150,170,205,.18);border-radius:12px;padding:12px}.bili-advanced summary{cursor:pointer;font-weight:650;padding:4px}.bili-advanced[open]>*:not(summary){margin-top:13px}.bili-qr-block{display:flex;flex-wrap:wrap;gap:18px;align-items:center;background:rgba(118,153,235,.05);border:1px solid rgba(150,170,205,.15);padding:16px;border-radius:12px}.bili-qr-block[hidden]{display:none}.bili-qr-block img{width:224px;height:224px;max-width:100%;background:white;padding:6px;border-radius:8px}.bili-qr-block>div{flex:1;min-width:160px}.bili-panel .two-col{align-items:end}.bili-panel .field button{margin-top:8px}

@@ -9,6 +9,7 @@ import re
 from datetime import datetime, timezone, timedelta
 
 import aiohttp
+from .steam_network import SteamNetwork
 
 DETAILS = 'https://store.steampowered.com/api/appdetails'
 ITAD = 'https://api.isthereanydeal.com'
@@ -73,22 +74,21 @@ async def check_itad_paid_history(session, appid, api_key):
         return itad_paid_history(await response.json(content_type=None))
 
 
-async def monitor_prices(store, *, api_key=None):
+async def monitor_prices(store, *, api_key=None, network=None):
     """Only explicit manual watchlist; bounded parallelism and API calls."""
     api_key = api_key if api_key is not None else os.environ.get('ASTR_STEAM_ITAD_API_KEY', '')
+    network = network or SteamNetwork(store.settings())
     ids = store.price_watch_ids(manual_only=True, limit=120)
     if not ids:
         return [], []
     errors, observations = [], []
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=16),
-        headers={'User-Agent': 'AstrBot-Steam-Freebies/0.6'}) as session:
+    async with network.session() as session:
         gate = asyncio.Semaphore(3)
         async def fetch_one(appid):
             async with gate:
                 try:
-                    async with session.get(DETAILS, params={'appids': appid, 'cc': 'cn', 'l': 'schinese'}) as response:
-                        response.raise_for_status()
-                        return parse_appdetails(await response.json(content_type=None), appid)
+                    data = await network.get_json(session, DETAILS, params={'appids': appid, 'cc': 'cn', 'l': 'schinese'})
+                    return parse_appdetails(data, appid)
                 except (aiohttp.ClientError, TimeoutError, ValueError, TypeError):
                     errors.append(f'Steam App {appid} 价格读取失败')
                     return None

@@ -1,4 +1,4 @@
-"""Opt-in Bilibili public video metadata; no login cookies or bypass of -412.
+"""Opt-in Bilibili metadata with optional private QR-login session; never bypass -412.
 
 Headlines are third-party tips, not proof that a game is free. AI is optional and
 strictly limited per scan; no Steam credentials or IPC tokens are sent to AI.
@@ -82,14 +82,16 @@ async def _bili_json(session, path, params):
         raise ValueError('B站返回数据格式无效')
     if payload.get('code') != 0:
         # Rate limits and login verification are not bypassed.
-        raise ValueError(f'B站接口拒绝请求（code={payload.get("code")}），请降低频率或稍后重试')
+        code = payload.get('code')
+        notice = '需要登录：请使用面板的官方二维码扫码' if code in (-101,-111) else '可能遇到访问频率限制，请稍后重试' if code in (-412,-352) else '可能接口变更或权限不足'
+        raise ValueError(f'B站接口拒绝请求（code={code}，{notice}）')
     return payload.get('data') or {}
 
 
-async def resolve_video_owner(bvid):
+async def resolve_video_owner(bvid, auth=None):
     if not BV.fullmatch(bvid):
         raise ValueError('请填写有效的 B站 BV 号或视频链接')
-    headers = {'User-Agent': 'Mozilla/5.0 SteamFreebiesAstrBot/0.6',
+    headers = auth.headers() if auth else {'User-Agent': 'Mozilla/5.0 SteamFreebiesAstrBot/0.6',
                'Referer': 'https://www.bilibili.com/'}
     async with aiohttp.ClientSession(headers=headers) as session:
         data = await _bili_json(session, '/x/web-interface/view', {'bvid': bvid})
@@ -139,18 +141,21 @@ async def classify_with_ai(session, video, provider, key, model):
     return m.group(1) if m else 'uncertain'
 
 
-async def fetch_bilibili_tips(store, ai_config=None):
+async def fetch_bilibili_tips(store, ai_config=None, auth=None):
     settings = store.settings()
     if not settings['bili_enabled']:
         return [], []
     errors, raw = [], []
-    headers = {'User-Agent': 'Mozilla/5.0 SteamFreebiesAstrBot/0.6',
+    headers = auth.headers() if auth else {'User-Agent': 'Mozilla/5.0 SteamFreebiesAstrBot/0.6',
                'Referer': 'https://www.bilibili.com/'}
     async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as session:
         try:
             img, sub = await _wbi_keys(session)
-        except (aiohttp.ClientError, TimeoutError, ValueError, TypeError) as exc:
-            return [], [f'B站 WBI 初始化失败：{type(exc).__name__}（可能触发风控）']
+        except ValueError as exc:
+            # Only locally authored validation messages are surfaced; never raw headers/cookies.
+            return [], [f'B站 WBI 初始化失败：{str(exc)[:150]}；可扫码登录或稍后重试']
+        except (aiohttp.ClientError, TimeoutError, TypeError) as exc:
+            return [], [f'B站 WBI 连接失败：{type(exc).__name__}；请检查容器到 api.bilibili.com 的网络']
         creators = store.bili_creators()[:3]
         for creator in creators:
             try:

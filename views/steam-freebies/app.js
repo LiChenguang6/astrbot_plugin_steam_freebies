@@ -106,7 +106,11 @@ function showTargets(){
     const item=e('div',undefined,'activity-item');const left=e('div');
     left.append(e('strong',`QQ群 ${t.group_id}`),e('small',`${t.platform_id} · ${t.official?'QQ 官方':'OneBot'} · ${t.enabled?'推送已启用':'已暂停'}`));
     item.append(left);
-    if(t.enabled){const button=e('button','发送测试消息','btn ghost');button.addEventListener('click',()=>apiAction('test-send',{target_id:t.id},'已向该群执行测试推送'));item.append(button);}
+    if(t.enabled){const button=e('button','发送测试消息','btn ghost');button.addEventListener('click',()=>apiAction('test-send',{target_id:t.id}));item.append(button);}
+    const summary=data.test_results?.[String(t.id)];
+    const delivery=data.delivery_last?.[String(t.id)];
+    const detail=e('small',`待推送 ${data.pending_counts?.[String(t.id)]??0} 条（去重后） · 最近正式推送：${delivery?new Date(delivery).toLocaleString():'暂无'}`+(summary?` · 最近测试：${summary.ok?'已发送':'失败'}（${new Date(summary.at).toLocaleString()}）`:''));
+    left.append(detail);
     return item;
   });
   $('target-list').replaceChildren(...(rows.length?rows:[e('p','暂未绑定QQ群，请在目标群发送 /喜加一绑定。','empty')]));
@@ -184,6 +188,11 @@ function render(){
   $('push-bilibili').checked=data.settings.push_bilibili;
   $('bili-ai-enabled').checked=data.settings.bili_ai_enabled;
   $('bili-ai-calls').value=String(data.settings.bili_ai_calls??2);
+  $('steam-proxy-mode').value=data.settings.steam_proxy_mode||'auto';
+  if(document.activeElement!==$('steam-proxy-url'))$('steam-proxy-url').value=data.settings.steam_proxy_url||'';
+  $('steam-search-fallback').checked=Boolean(data.settings.steam_search_fallback);
+  $('steam-network-status').textContent='Steam 请求：'+(data.steam_network?.via||'直连')+
+    ' · '+(data.settings.steam_search_fallback?'网页搜索后备源开启':'网页搜索后备源已关闭（推荐）');
   if(document.activeElement!==$('bili-keywords'))$('bili-keywords').value=data.settings.bili_keywords||'';
   showGames(); showClaimHistory(); showTargets(); showASF(); showPrices(); showBili(); syncAsfProgress();
 }
@@ -209,7 +218,11 @@ function showPrices(){
 function showBili(){
   const creators=data.bili_creators||[];
   const ai=data.ai||{};
-  $('bili-ai-status').textContent=ai.configured?`AI Key 已配置 · ${ai.provider||'openai'}`:'AI Key 未配置（可选）';
+  $('bili-ai-status').textContent=ai.configured?`AI Key 已配置 · ${ai.provider||'openai'}`:'AI 默认关闭';
+  const login=data.bili_login||{};
+  $('bili-login-status').textContent=login.status||'未登录';
+  $('bili-login-status').className='pill '+(login.configured?'ok':'neutral');
+  $('bili-login-logout').disabled=!login.configured;
   $('ai-provider').value=ai.provider||'openai';
   if(document.activeElement!==$('ai-model'))$('ai-model').value=ai.model||'gpt-4o-mini';
   $('bili-status').textContent=`已订阅 ${creators.length} 位 UP 主 · ${data.settings.bili_enabled?'B站监控已开启':'B站监控已关闭'} · ${data.settings.bili_ai_enabled?'AI 辅助已开启':'AI 不消耗 Token'}`;
@@ -244,6 +257,43 @@ $('bili-uid-add').addEventListener('click',async()=>{
   const result=await apiAction('bili/add',{mid:id});
   if(result)$('bili-uid').value='';
 });
+// Official Bilibili QR flow: only the QR image reaches the browser, never cookies or token.
+let qrTimer=null;
+function endQrPolling(){if(qrTimer!==null){clearInterval(qrTimer);qrTimer=null;}}
+async function checkBiliQr(){
+  try{
+    const result=await bridge.apiPost('bili/login/poll',{});
+    $('bili-qr-hint').textContent=result.notice||'正在等待手机确认';
+    if(['success','expired'].includes(result.state)){
+      endQrPolling();
+      if(result.state==='success'){
+        $('bili-qr-box').hidden=true;
+        toast('B站已登录；下次扫描会使用你的私有会话读取公开视频信息');
+        await reload();
+      }
+    }
+  }catch(err){endQrPolling();$('bili-qr-hint').textContent='查询失败：'+(err?.message||String(err));}
+}
+$('bili-login-start').addEventListener('click',async()=>{
+  const btn=$('bili-login-start');btn.disabled=true;
+  try{
+    const result=await bridge.apiPost('bili/login/start',{});
+    if(!result.image?.startsWith('data:image/svg+xml;base64,'))throw new Error('二维码格式不正确');
+    $('bili-qr-image').src=result.image;
+    $('bili-qr-hint').textContent=result.notice;
+    $('bili-qr-box').hidden=false;
+    endQrPolling();
+    qrTimer=setInterval(checkBiliQr,3500);
+  }catch(err){toast('B站二维码生成失败：'+err.message);}
+  finally{btn.disabled=false;}
+});
+$('bili-qr-check').addEventListener('click',checkBiliQr);
+$('bili-login-logout').addEventListener('click',async()=>{
+  if(!await askUser('只清除插件的 B站本地会话；这不会退出你手机上的 B站 App。',{title:'退出 B站会话'}))return;
+  endQrPolling();$('bili-qr-box').hidden=true;
+  await apiAction('bili/logout',{});
+});
+$('bili-save').addEventListener('click',()=> $('save').click());
 $('watch-add').addEventListener('click',async()=>{
   const id=Number($('watch-appid').value);
   if(!Number.isSafeInteger(id)||id<1||id>2147483647){toast('请输入有效的 Steam 游戏 AppID');return;}
@@ -260,7 +310,9 @@ $('save').addEventListener('click',()=>apiAction('settings',{
   push_watch_prices:$('push-watch-prices').checked,
   bili_enabled:$('bili-enabled').checked,push_bilibili:$('push-bilibili').checked,
   bili_ai_enabled:$('bili-ai-enabled').checked,bili_ai_calls:Number($('bili-ai-calls').value),
-  bili_keywords:$('bili-keywords').value.trim()
+  bili_keywords:$('bili-keywords').value.trim(),
+  steam_proxy_mode:$('steam-proxy-mode').value,steam_proxy_url:$('steam-proxy-url').value.trim(),
+  steam_search_fallback:$('steam-search-fallback').checked
 },'推送和扫描设置已保存。'));
 for(const button of document.querySelectorAll('[data-filter]')){
   button.addEventListener('click',()=>{
