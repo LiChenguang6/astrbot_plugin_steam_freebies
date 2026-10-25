@@ -59,7 +59,7 @@ async function apiAction(endpoint, body, ok){
 function makeGame(game){
   const card=e('article',undefined,'game');
   const top=e('div',undefined,'game-top');
-  top.append(e('span',({steam_candidate:'Steam 商店折扣候选',third_party:'第三方赠 Key / 活动',paid_to_free:'付费转免费候选'}[game.kind]||'未知活动'),game.kind==='third_party'?'chip':'chip steam'));
+  top.append(e('span',({steam_candidate:'Steam 商店折扣候选',third_party:'第三方赠 Key / 活动',paid_to_free:'付费转免费候选',promo_api:'促销 API 线索',watch_price:'关注价格变化',bilibili_tip:'B站待核验线索'}[game.kind]||'未知活动'),game.kind==='third_party'?'chip':'chip steam'));
   top.append(e('span',game.source,'meta')); card.append(top);
   card.append(e('div',game.name,'game-title'),e('div',`原价：${game.original_price||'未知'} · 截止：${game.end_date||'以活动页为准'}`,'meta'));
   card.append(e('p',game.confidence));
@@ -179,8 +179,13 @@ function render(){
   $('autoclaim').checked=data.settings.auto_claim_enabled;
   $('price-monitor').checked=data.settings.price_monitor_enabled;
   $('push-convert').checked=data.settings.push_paid_to_free;
-  $('price-budget').value=String(data.settings.price_checks_per_scan||18);
-  showGames(); showClaimHistory(); showTargets(); showASF(); showPrices(); syncAsfProgress();
+  $('push-watch-prices').checked=data.settings.push_watch_prices;
+  $('bili-enabled').checked=data.settings.bili_enabled;
+  $('push-bilibili').checked=data.settings.push_bilibili;
+  $('bili-ai-enabled').checked=data.settings.bili_ai_enabled;
+  $('bili-ai-calls').value=String(data.settings.bili_ai_calls??2);
+  if(document.activeElement!==$('bili-keywords'))$('bili-keywords').value=data.settings.bili_keywords||'';
+  showGames(); showClaimHistory(); showTargets(); showASF(); showPrices(); showBili(); syncAsfProgress();
 }
 async function reload(){
   if(!bridge)return;
@@ -190,16 +195,55 @@ async function reload(){
 function showPrices(){
   const prices=data?.prices||{total:0,paid:0,free:0,watch:[]};
   $('itad-status').textContent=data.itad_configured?'ITAD 已配置':'ITAD 未配置（可选）';
-  $('price-status').textContent=`已追踪 ${prices.total} 个 AppID · 最近收费 ${prices.paid} 个 · 当前免费 ${prices.free} 个 · 抽样不能覆盖全部 Steam 游戏`;
+  $('price-status').textContent=`正在关注 ${prices.watch?.length||0} 个 AppID · 只检查你的关注列表，不再随机抽样`;
   const rows=(prices.watch||[]).map(item=>{
     const row=e('div',undefined,'activity-item');
     const side=e('div');
-    side.append(e('strong',item.name),e('small',`AppID ${item.appid} · ${item.state==='paid'? '收费 '+((item.amount||0)/100).toFixed(2)+' '+(item.currency||'') : item.state==='free'?'当前免费':'尚未采集'} · ${item.manual?'手动关注':'自动发现'}`));
+    side.append(e('strong',item.name),e('small',`AppID ${item.appid} · ${item.state==='paid'? '收费 '+((item.amount||0)/100).toFixed(2)+' '+(item.currency||'') : item.state==='free'?'当前免费':'尚未采集'} · 手动关注`));
     const url=e('a','Steam ↗'); url.href=`https://store.steampowered.com/app/${item.appid}/`;url.target='_blank';url.rel='noopener noreferrer';
-    row.append(side,url);return row;
+    const remove=e('button','移除','btn ghost');remove.type='button';remove.addEventListener('click',()=>apiAction('price/unwatch',{appid:item.appid},'已移除关注'));
+    row.append(side,url,remove);return row;
   });
   $('watch-list').replaceChildren(...(rows.length?rows:[e('p','暂无价格记录；可手动添加 AppID，然后点击立即扫描。','empty')]));
 }
+function showBili(){
+  const creators=data.bili_creators||[];
+  const ai=data.ai||{};
+  $('bili-ai-status').textContent=ai.configured?`AI Key 已配置 · ${ai.provider||'openai'}`:'AI Key 未配置（可选）';
+  $('ai-provider').value=ai.provider||'openai';
+  if(document.activeElement!==$('ai-model'))$('ai-model').value=ai.model||'gpt-4o-mini';
+  $('bili-status').textContent=`已订阅 ${creators.length} 位 UP 主 · ${data.settings.bili_enabled?'B站监控已开启':'B站监控已关闭'} · ${data.settings.bili_ai_enabled?'AI 辅助已开启':'AI 不消耗 Token'}`;
+  const rows=creators.map(creator=>{
+    const item=e('div',undefined,'activity-item');
+    const left=e('div');left.append(e('strong',creator.name),e('small',`UID: ${creator.mid}`));
+    const rm=e('button','取消订阅','btn ghost');rm.type='button';rm.addEventListener('click',()=>apiAction('bili/remove',{mid:creator.mid}));
+    item.append(left,rm);return item;
+  });
+  $('bili-creators').replaceChildren(...(rows.length?rows:[e('p','还没有订阅的 UP 主。','empty')]));
+}
+$('ai-save').addEventListener('click',async()=>{
+  const key=$('ai-key').value.trim();
+  const result=await apiAction('ai/settings',{provider:$('ai-provider').value,model:$('ai-model').value.trim(),...(key?{api_key:key}:{})});
+  $('ai-key').value='';
+  if(result)toast('AI Key 已保存在 AstrBot 私有目录；开启 AI 辅助后才可能消耗 Token');
+});
+$('ai-clear').addEventListener('click',async()=>{
+  if(!await askUser('确定删除插件本地保存的 AI Key？Docker 环境变量里的 Key 不受此操作影响。',{title:'清除 AI Key'}))return;
+  await apiAction('ai/settings',{clear_key:true});
+  $('ai-key').value='';
+});
+$('bili-add').addEventListener('click',async()=>{
+  const video=$('bili-video').value.trim();
+  if(!/BV[0-9a-zA-Z]{10}/.test(video)){toast('请填写有效的 BV 视频链接或 BV 号');return;}
+  const result=await apiAction('bili/add',{video});
+  if(result)$('bili-video').value='';
+});
+$('bili-uid-add').addEventListener('click',async()=>{
+  const id=Number($('bili-uid').value);
+  if(!Number.isSafeInteger(id)||id<1){toast('UP 主 UID 应是正整数');return;}
+  const result=await apiAction('bili/add',{mid:id});
+  if(result)$('bili-uid').value='';
+});
 $('watch-add').addEventListener('click',async()=>{
   const id=Number($('watch-appid').value);
   if(!Number.isSafeInteger(id)||id<1||id>2147483647){toast('请输入有效的 Steam 游戏 AppID');return;}
@@ -213,7 +257,10 @@ $('save').addEventListener('click',()=>apiAction('settings',{
   push_steam:$('push-steam').checked,push_third_party:$('push-key').checked,
   push_claim_results:$('push-result').checked,auto_claim_enabled:$('autoclaim').checked,
   price_monitor_enabled:$('price-monitor').checked,push_paid_to_free:$('push-convert').checked,
-  price_checks_per_scan:Number($('price-budget').value)
+  push_watch_prices:$('push-watch-prices').checked,
+  bili_enabled:$('bili-enabled').checked,push_bilibili:$('push-bilibili').checked,
+  bili_ai_enabled:$('bili-ai-enabled').checked,bili_ai_calls:Number($('bili-ai-calls').value),
+  bili_keywords:$('bili-keywords').value.trim()
 },'推送和扫描设置已保存。'));
 for(const button of document.querySelectorAll('[data-filter]')){
   button.addEventListener('click',()=>{

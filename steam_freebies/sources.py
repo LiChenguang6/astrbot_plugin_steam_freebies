@@ -70,14 +70,6 @@ async def fetch_candidates():
     output, errors = [], []
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
         try:
-            params = {"maxprice": "free", "specials": "1", "infinite": "1", "start": "0", "count": "100", "category1": "998", "l": "schinese"}
-            async with session.get(SEARCH_URL, params=params) as resp:
-                resp.raise_for_status()
-                payload = await resp.json(content_type=None)
-            output.extend(parse_steam_html(str(payload.get("results_html", ""))))
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, TypeError) as exc:
-            errors.append(f"Steam 搜索: {type(exc).__name__}: {str(exc)[:90]}")
-        try:
             async with session.get(GIVEAWAYS_URL, params={"platform": "steam", "type": "game"}) as resp:
                 if resp.status == 201:
                     data = []
@@ -87,4 +79,13 @@ async def fetch_candidates():
             output.extend(parse_gamerpower(data))
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, TypeError) as exc:
             errors.append(f"GamerPower: {type(exc).__name__}: {str(exc)[:90]}")
+        # Legacy Steam search page is a last-resort supplement, not the primary discovery API.
+        try:
+            params = {"maxprice": "free", "specials": "1", "infinite": "1", "start": "0", "count": "100", "category1": "998", "l": "schinese"}
+            async with session.get(SEARCH_URL, params=params) as resp:
+                resp.raise_for_status()
+                payload = await resp.json(content_type=None)
+            output.extend(parse_steam_html(str(payload.get("results_html", ""))))
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, TypeError) as exc:
+            errors.append(f"Steam 搜索: {type(exc).__name__}: {str(exc)[:90]}")
     return output, errors

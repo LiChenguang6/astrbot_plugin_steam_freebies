@@ -1,6 +1,6 @@
 # Steam 喜加一监控 · AstrBot 插件
 
-> **v0.5.0（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
+> **v0.6.0（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
 
 独立插件，适用于 AstrBot ≥ 4.29.1 / Python ≥ 3.12；支持 AstrBot 的 OneBot（如 NapCat）与 QQ 官方适配器。借鉴 [原项目](https://github.com/LiChenguang6/astrbot_plugin_steam_status_monitor) 的插件面板架构，**不影响该项目**。
 
@@ -197,3 +197,58 @@ ASF 官方资料：[项目](https://github.com/JustArchiNET/ArchiSteamFarm) · [
 - **注意：** 这是按抽样监控的候选检测，**不能保证及时发现所有付费转免费游戏**。例如已经在插件安装前转换的老游戏，不会被错误标记为“现在刚转换”。区域价格在中国区和 ITAD 美国区可能不同；价格变化、免费周末与版权许可证变化仍需要人工核实。
 
 更新历史统一见 [CHANGELOG.md](CHANGELOG.md)。
+
+
+## v0.6.0 使用说明：促销 API + 关注游戏 + B站情报 + 可选 AI
+
+### 促销来源和准确性
+
+| 源 | 是否需要密钥 | 用途与限制 |
+|---|---|---|
+| GamerPower REST API | 不需要 | 完整游戏/第三方 Steam Key 赠送线索（原有功能） |
+| IsThereAnyDeal `/giveaways/v1` | 需要 ITAD Key | 现成 Steam 赠送活动候选，包括截止日期和原始来源链接 |
+| IsThereAnyDeal `/deals/v2` | 需要 ITAD Key | 100% 折扣促销候选；非正式永久入库证明 |
+| IsThereAnyDeal `/lookup/shop/61/id/v1` | 需要 ITAD Key | ITAD 游戏 ID 映射 Steam AppID，供 Steam 交叉核验 |
+| Steam `appdetails` | 不需要 | 对已知 AppID 确认 `is_free`、当前售价与折扣，仅作为商店状态 |
+| Steam 搜索列表 | 不需要 | 兼容保底搜索，不再做任意抽样历史价格监控 |
+| B站公开 WBI 视频接口 | 不需要 Key，但可能触发风控 | 用视频标题、简介、UP 主 UID 报告待核验情报 |
+
+**促销 API 不能覆盖所有游戏**；不同地区、临时免费试玩、周末试玩、限时永久入库与永久转 F2P 必须分开判断。普通付费游戏的折扣、先付费再免费、0 元许可不是一回事。本插件只对管理员批准的合法 Free-to-Keep SubID 允许 ASF 领取，其余来源**不会自动执行 ASF 命令**。
+
+ITAD：向 [IsThereAnyDeal 注册应用](https://isthereanydeal.com/apps/my/)申请 API Key，通过群晖容器变量设置 `ASTR_STEAM_ITAD_API_KEY`；若不设置，GamerPower 和 Steam 后备源仍然可用，ITAD API 则不启动。ITAD 保留来源 URL，注意其 [API 使用条款](https://docs.isthereanydeal.com/)。
+
+### 只监控指定 Steam 游戏的价格
+
+在后台 **「游戏关注」** 输入 Steam AppID（例如 `850170`）→「添加监控」→「立即扫描」。第一次只建立基线，后续若价格涨跌、或 `is_free` 变化才生成通知。可以独立关闭「关注游戏价格变动 QQ 提醒」与「付费转免费候选 QQ 推送」。移除关注会停止轮询；不扫描整个游戏目录。
+
+v0.5.0 的旧自动抽样游戏记录在升级时清理（`manual=0`），**手动添加的监控不受影响**；原有的价格事件历史、ASF Bot、本地登录凭据、QQ 绑定和领取记录不因插件更新而删除。
+
+### Bilibili 免费游戏 UP 主/关键词
+
+后台 **「B站线索」** → 将 `https://www.bilibili.com/video/BV16mnt6iEiZ/` 粘贴到输入框 →「订阅这个 UP 主」。插件通过公开 B站视频元数据读取作者 UID 并保存，之后轮询 UP 主新投稿；如果此接口在你的网络上被 B站拦截，可以在浏览器 B站 UP 主空间地址找到 `space.bilibili.com/<UID>`，在备用框直接填 UID。
+
+可自定义关键词，如 `Steam 喜加一,Steam 限时免费,Steam 永久免费`，最多 5 个，每轮搜索前 2 个（限流考虑）；只判断一周内的视频标题和简介，按 BV 去重。B站接口有 WBI 签名和风控，不提供可保证稳定的开放“全站免费游戏 API”，遇到 -412/-352 等拒绝访问时报告错误并停止本轮 B站源。**不会获取视频全部字幕或下载视频，也不会绕过站点保护。**
+
+### AI（自选是否花 Token）
+
+进入后台 **「B站线索」**，选择 AI 提供商，填写模型名及 API Key，按「保存 AI 配置」。推荐优先在受信的 HTTPS AstrBot 地址操作；在普通 HTTP 的 `:6185` 输入 Key 存在网络窃听风险。密钥保存在私有数据目录中的 `ai-config.json`，不会回显。也支持预先配置环境变量：
+
+```sh
+ASTR_STEAM_AI_PROVIDER=deepseek
+ASTR_STEAM_AI_MODEL=deepseek-chat
+ASTR_STEAM_AI_API_KEY=your_private_key
+```
+
+然后在 **「监控设置」** 单独开启「B站线索发现」和「使用我的 AI API 辅助判断 B站线索」，可以选每轮最多调用 **0、1、2 或 3 次**。默认 AI **关闭**，不会向 AI 服务发送请求或消耗 Token。只有新出现并通过本地规则的短视频标题和描述才可能送去 AI，并在本地去重以免重复收费。每家服务的每 Token 实际价格不同，由你的 AI 服务商计算。
+
+如果 AI 只报告不确定，仍按视频线索处理，不能替代 Steam 官方的当期价格和许可证核验。为了兼容不同服务商，AI 提供商仅支持预设 HTTPS 域名，不允许通过 WebUI 输入任意 API 端点；如使用非列表中的自建模型，则当前版本暂不支持，请不要用公网暴露的无鉴权模型服务。
+
+### 开发核验
+
+```sh
+python -m pytest -q
+python -m compileall -q steam_freebies main.py
+node --check views/steam-freebies/app.js
+```
+
+更新日志见 [CHANGELOG.md](CHANGELOG.md)。本版本尚未在真实群晖 Docker + B站接口 + ITAD 实时数据上联调；如果页面显示数据源不可用，先查看安全的错误提示，避免贴出 API Key 或 Steam 登录信息。

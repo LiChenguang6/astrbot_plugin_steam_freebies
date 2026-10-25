@@ -13,6 +13,9 @@ from .steam_freebies.asf import claim_sub
 from .steam_freebies.manager import ManagedASF
 from .steam_freebies.embedded_ui import EmbeddedUI
 from .steam_freebies.sources import fetch_candidates
+from .steam_freebies.promotions import fetch_itad_promotions
+from .steam_freebies.bilibili import fetch_bilibili_tips, resolve_video_owner, extract_bvid
+from .steam_freebies.ai_config import AIConfig
 from .steam_freebies.price_monitor import monitor_prices
 from .steam_freebies.store import Store
 
@@ -28,6 +31,7 @@ class Main(Star):
         self.store = Store(data_dir / "freebies.sqlite3")
         self.asf_manager = ManagedASF(data_dir / 'asf-manager')
         self.asf_ui = EmbeddedUI(self.asf_manager)
+        self.ai_config = AIConfig(data_dir)
         self.scan_lock = asyncio.Lock()
         self.claim_lock = asyncio.Lock()
         self.claim_notifications_lock = asyncio.Lock()
@@ -45,6 +49,10 @@ class Main(Star):
             ("POST", "claim"): self.web_claim,
             ("POST", "test-send"): self.web_test,
             ("POST", "price/watch"): self.web_price_watch,
+            ("POST", "price/unwatch"): self.web_price_unwatch,
+            ("POST", "bili/add"): self.web_bili_add,
+            ("POST", "bili/remove"): self.web_bili_remove,
+            ("POST", "ai/settings"): self.web_ai_settings,
             ("POST", "asf/install"): self.web_asf_install,
             ("POST", "asf/start"): self.web_asf_start,
             ("POST", "asf/stop"): self.web_asf_stop,
@@ -87,7 +95,27 @@ class Main(Star):
 
     async def scan_and_process(self):
         async with self.scan_lock:
-            candidates, errors = await fetch_candidates()
+            # The existing GamerPower REST API is available without a key.
+            # ITAD's giveaway/deal APIs add structured Steam promotion coverage.
+            itad_key = os.getenv('ASTR_STEAM_ITAD_API_KEY', '')
+            candidates, errors = [], []
+            if itad_key:
+                try:
+                    more, issues = await fetch_itad_promotions(itad_key)
+                    candidates.extend(more)
+                    errors.extend(issues)
+                except Exception as exc:
+                    errors.append(f'ITAD 促销源失败：{type(exc).__name__}')
+            more, issues = await fetch_candidates()
+            candidates.extend(more)
+            errors.extend(issues)
+            if self.store.settings()['bili_enabled']:
+                try:
+                    tips, issues = await fetch_bilibili_tips(self.store, self.ai_config.effective())
+                    candidates.extend(tips)
+                    errors.extend(issues)
+                except Exception as exc:
+                    errors.append(f'B站数据源失败：{type(exc).__name__}')
             if self.store.settings()['price_monitor_enabled']:
                 try:
                     changes, price_errors = await monitor_prices(self.store)
@@ -132,9 +160,14 @@ class Main(Star):
             for g in self.store.pending_pushes(target["id"], max_rows=10):
                 kind = {'steam_candidate':'Steam 商店 100% 折扣候选',
                         'paid_to_free':'曾经付费 → 当前免费候选',
+                        'watch_price':'关注游戏价格变动',
+                        'bilibili_tip':'B站免费游戏线索 · 待核实',
+                        'promo_api':'促销 API / 免费赠送线索',
                         'third_party':'第三方 Steam Key / 活动赠送'}.get(g['kind'],'游戏活动')
                 tip = ('Steam 商店活动需核实是否为永久入库。' if g['kind']=='steam_candidate'
                        else '本地价格记录显示先付费、现免费；请核实是否已转永久免费，此类不自动调用 ASF。' if g['kind']=='paid_to_free'
+                       else '这是你关注游戏的价格变化，不会自动执行购买或领取。' if g['kind']=='watch_price'
+                       else '只是促销或视频线索，需打开链接核实，不能自动领取。' if g['kind'] in ('bilibili_tip','promo_api')
                        else '第三方活动可能需要注册、积分、地区资格或库存，无法通过 ASF 直接领取 Key。')
                 text = (f"🎁 免费游戏发现｜{kind}\n"
                         f"游戏：{g['name']}\n标价：{g['original_price'] or '未知'}\n"
@@ -215,6 +248,8 @@ class Main(Star):
             "targets": targets,
             "games": self.store.games(),
             "prices": self.store.price_overview(),
+            "bili_creators": self.store.bili_creators(),
+            "ai": self.ai_config.public(),
             "itad_configured": bool(os.getenv("ASTR_STEAM_ITAD_API_KEY")),
             "last_scan": self.last_scan,
             "last_items": self.last_items,
@@ -251,6 +286,31 @@ class Main(Star):
     async def web_price_watch(self):
         body = await request.json(default={})
         return json_response(self.store.add_price_watch(body.get('appid')))
+
+    async def web_ai_settings(self):
+        body = await request.json(default={})
+        return json_response({'ok':True,'ai':self.ai_config.save(body),
+                              'notice':'AI 配置已保存到私有目录，不会返回 API Key；是否调用由 AI 开关控制'})
+
+    async def web_price_unwatch(self):
+        body = await request.json(default={})
+        return json_response(self.store.remove_price_watch(body.get('appid')))
+
+    async def web_bili_add(self):
+        body = await request.json(default={})
+        video = extract_bvid(body.get('video'))
+        if video:
+            mid, name = await resolve_video_owner(video)
+        else:
+            mid, name = body.get('mid'), str(body.get('name') or '')
+            if type(mid) is not int or mid <= 0:
+                raise ValueError('请填写 B站 BV 视频链接或 UP 主 UID')
+            name = name[:80] if name else f'UP {mid}'
+        return json_response(self.store.add_bili_creator(mid, name))
+
+    async def web_bili_remove(self):
+        body = await request.json(default={})
+        return json_response(self.store.remove_bili_creator(body.get('mid')))
 
     async def web_asf_install(self):
         self.asf_manager.install()

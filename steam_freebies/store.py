@@ -17,7 +17,12 @@ DEFAULT_SETTINGS = {
     "auto_claim_enabled": False,
     "price_monitor_enabled": True,
     "push_paid_to_free": True,
-    "price_checks_per_scan": 18,
+    "push_watch_prices": True,
+    "bili_enabled": False,
+    "push_bilibili": False,
+    "bili_keywords": "Steam 喜加一,Steam 永久免费,Steam 限时免费",
+    "bili_ai_enabled": False,
+    "bili_ai_calls": 2,
 }
 
 
@@ -73,8 +78,18 @@ class Store:
           appid INTEGER NOT NULL, seen_at TEXT NOT NULL,
           state TEXT NOT NULL, amount INTEGER NOT NULL, currency TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS bili_creators(
+          mid INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT '', added_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS bili_seen(
+          bvid TEXT PRIMARY KEY, seen_at TEXT NOT NULL
+        );
         """)
-        self.db.commit()
+        # v0.6 migration: old auto-sampled rows must not remain in the watchlist.
+        # Manual watches and their price history are preserved.
+        with self.db:
+            self.db.execute('DELETE FROM price_watch WHERE manual=0')
+            self.db.execute('DELETE FROM price_history WHERE appid NOT IN (SELECT appid FROM price_watch)')
 
     def settings(self):
         rows = self.db.execute("SELECT k,v FROM settings").fetchall()
@@ -92,12 +107,17 @@ class Store:
             raise ValueError("存在不支持的设置字段")
         if "scan_minutes" in values and (type(values["scan_minutes"]) is not int or not 30 <= values["scan_minutes"] <= 360):
             raise ValueError("扫描间隔须为 30–360 分钟")
-        for k in ("push_enabled", "push_steam", "push_third_party", "push_claim_results", "auto_claim_enabled", "price_monitor_enabled", "push_paid_to_free"):
+        for k in ("push_enabled", "push_steam", "push_third_party", "push_claim_results", "auto_claim_enabled", "price_monitor_enabled", "push_paid_to_free",
+                  "push_watch_prices", "bili_enabled", "push_bilibili", "bili_ai_enabled"):
             if k in values and type(values[k]) is not bool:
                 raise ValueError(f"{k} 必须是布尔值")
-        if 'price_checks_per_scan' in values and (type(values['price_checks_per_scan']) is not int
-           or values['price_checks_per_scan'] not in (12, 18, 24)):
-            raise ValueError('每轮价格查询数仅允许 12、18、24')
+        if 'bili_ai_calls' in values and (type(values['bili_ai_calls']) is not int or values['bili_ai_calls'] not in (0, 1, 2, 3)):
+            raise ValueError('AI 每轮调用数仅允许 0–3')
+        if 'bili_keywords' in values:
+            import re
+            words = values['bili_keywords']
+            if type(words) is not str or len(words) > 140 or not words.strip() or len([x for x in re.split('[,，\n]', words) if x.strip()]) > 5:
+                raise ValueError('B站关键词总长度最多 140 字，1–5 个词')
         with self.db:
             for k, v in values.items():
                 self.db.execute("INSERT INTO settings(k,v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, json.dumps(v)))
@@ -159,11 +179,11 @@ class Store:
         query = """
          SELECT g.* FROM games g LEFT JOIN sent s ON s.game_key=g.key AND s.target_id=?
          WHERE s.game_key IS NULL AND g.last_seen>=?
-           AND ((g.kind='steam_candidate' AND ?=1) OR (g.kind='third_party' AND ?=1) OR (g.kind='paid_to_free' AND ?=1))
+           AND ((g.kind='steam_candidate' AND ?=1) OR (g.kind='third_party' AND ?=1) OR (g.kind='paid_to_free' AND ?=1) OR (g.kind='watch_price' AND ?=1) OR (g.kind='bilibili_tip' AND ?=1) OR (g.kind='promo_api' AND ?=1))
          ORDER BY g.first_seen DESC LIMIT ?"""
         from datetime import timedelta
         since=(datetime.now(timezone.utc)-timedelta(hours=48)).isoformat(timespec='seconds')
-        return [dict(r) for r in self.db.execute(query, (target_id,since,int(opts['push_steam']),int(opts['push_third_party']),int(opts['push_paid_to_free']),max_rows))]
+        return [dict(r) for r in self.db.execute(query, (target_id,since,int(opts['push_steam']),int(opts['push_third_party']),int(opts['push_paid_to_free']),int(opts['push_watch_prices']),int(opts['push_bilibili']),int(opts['push_steam']),max_rows))]
 
     def marked(self, target_id, key):
         with self.db:
@@ -206,7 +226,7 @@ class Store:
         '''Manual watch adds a baseline, never sends a fake historical conversion.'''
         if type(appid) is not int or not 0 < appid <= 2_147_483_647:
             raise ValueError('请输入有效的 Steam 游戏 AppID')
-        if self.db.execute('SELECT COUNT(*) FROM price_watch').fetchone()[0] >= 500 and not self.db.execute(
+        if self.db.execute('SELECT COUNT(*) FROM price_watch WHERE manual=1').fetchone()[0] >= 120 and not self.db.execute(
                 'SELECT 1 FROM price_watch WHERE appid=?', (appid,)).fetchone():
             raise ValueError('监控池已达 500 个游戏上限')
         now = utcnow()
@@ -215,9 +235,49 @@ class Store:
                 ON CONFLICT(appid) DO UPDATE SET manual=1''', (appid, f'Steam App {appid}', now))
         return {'appid': appid, 'notice': '已加入价格监控，首次扫描只建立基线，不误报历史转免费'}
 
-    def price_watch_ids(self, limit=9):
+    def remove_price_watch(self, appid):
+        if type(appid) is not int or appid <= 0:
+            raise ValueError('无效 AppID')
+        with self.db:
+            self.db.execute('DELETE FROM price_watch WHERE appid=? AND manual=1', (appid,))
+            self.db.execute('DELETE FROM price_history WHERE appid=?', (appid,))
+        return {'ok': True, 'notice': f'已移除 AppID {appid} 监控'}
+
+    def price_watch_ids(self, limit=120, manual_only=False):
         return [r[0] for r in self.db.execute('''SELECT appid FROM price_watch
-             ORDER BY manual DESC, last_checked ASC, appid ASC LIMIT ?''', (limit,))]
+             WHERE (?=0 OR manual=1)
+             ORDER BY manual DESC, last_checked ASC, appid ASC LIMIT ?''', (int(manual_only), limit))]
+
+    def bili_creators(self):
+        return [dict(row) for row in self.db.execute('SELECT * FROM bili_creators ORDER BY added_at DESC LIMIT 10')]
+
+    def add_bili_creator(self, mid, name):
+        if type(mid) is not int or not 0 < mid < 10**15:
+            raise ValueError('UP 主 UID 无效')
+        if type(name) is not str or len(name) > 80:
+            raise ValueError('UP 主名称无效')
+        if self.db.execute('SELECT COUNT(*) FROM bili_creators').fetchone()[0] >= 10 and not self.db.execute('SELECT 1 FROM bili_creators WHERE mid=?', (mid,)).fetchone():
+            raise ValueError('最多关注 10 位 UP 主')
+        with self.db:
+            self.db.execute('INSERT INTO bili_creators(mid,name,added_at) VALUES (?,?,?) ON CONFLICT(mid) DO UPDATE SET name=excluded.name', (mid,name,utcnow()))
+        return {'ok': True, 'notice': f'已添加 B站 UP 主 {name}（UID {mid}）'}
+
+    def remove_bili_creator(self, mid):
+        if type(mid) is not int or mid <= 0:
+            raise ValueError('UP 主 UID 无效')
+        with self.db:
+            self.db.execute('DELETE FROM bili_creators WHERE mid=?', (mid,))
+        return {'ok': True, 'notice': f'已移除 UP 主 {mid}'}
+
+    def bili_seen(self, bvid):
+        return self.db.execute('SELECT 1 FROM bili_seen WHERE bvid=?', (bvid,)).fetchone() is not None
+
+    def mark_bili_seen(self, bvid):
+        with self.db:
+            self.db.execute('INSERT OR IGNORE INTO bili_seen VALUES (?,?)', (bvid, utcnow()))
+            # Bound cache size on a small NAS.
+            self.db.execute('DELETE FROM bili_seen WHERE bvid IN (SELECT bvid FROM bili_seen ORDER BY seen_at DESC LIMIT -1 OFFSET 2500)')
+
 
     def price_overview(self):
         summary = self.db.execute('''SELECT COUNT(*) AS total,
@@ -226,7 +286,7 @@ class Store:
             FROM price_watch''').fetchone()
         recent = [dict(x) for x in self.db.execute('''SELECT appid,name,state,amount,currency,
             first_seen,last_checked,last_paid_at,manual FROM price_watch
-            ORDER BY manual DESC,last_checked DESC LIMIT 30''')]
+            WHERE manual=1 ORDER BY last_checked DESC LIMIT 120''')]
         return {'total': summary['total'], 'paid': summary['paid'] or 0,
                 'free': summary['free'] or 0, 'watch': recent}
 
@@ -268,11 +328,26 @@ class Store:
                     self.db.execute('''UPDATE price_watch SET name=?,state=?,amount=?,
                         currency=?,last_checked=?,last_paid_at=? WHERE appid=?''',
                         (name,state,amount,currency,now,last_paid_at,appid))
+                # Watchlist notifications: only user-chosen items, never initial baseline.
+                if existing and existing['manual'] and existing['state'] in ('paid', 'free') and (existing['state'] != state or
+                        (state == 'paid' and (existing['amount'] != amount or existing['currency'] != currency))):
+                    from datetime import timedelta
+                    paid_before = bool(existing['state'] == 'paid' and existing['amount'] > 0 and
+                        existing['last_paid_at'] >= (datetime.now(timezone.utc) - timedelta(days=90)).isoformat(timespec='seconds'))
+                    if not (state == 'free' and paid_before):
+                        before = ('免费' if existing['state'] == 'free' else
+                                  f'{existing["amount"]/100:.2f} {existing["currency"]}' if existing['state'] == 'paid' else '未知')
+                        after = ('免费' if state == 'free' else f'{amount/100:.2f} {currency}')
+                        events.append({'key': f'watch-price:{appid}:{now.replace(":", "").replace("-", "")}',
+                            'name': name, 'kind': 'watch_price', 'source': 'Steam 关注价格变化',
+                            'appid': appid, 'url': f'https://store.steampowered.com/app/{appid}/',
+                            'original_price': f'{before} → {after}', 'end_date': '',
+                            'confidence': '你关注的游戏价格已变化；具体价格以 Steam 商店所在区域为准'})
                 # Date gap protects against very old data being mistaken for a recent change.
                 from datetime import timedelta
                 recently_paid = bool(existing and existing['last_paid_at'] and
                     existing['last_paid_at'] >= (datetime.now(timezone.utc)-timedelta(days=90)).isoformat(timespec='seconds'))
-                if existing and existing['state'] == 'paid' and existing['amount'] > 0 and state == 'free' and recently_paid:
+                if existing and existing['manual'] and existing['state'] == 'paid' and existing['amount'] > 0 and state == 'free' and recently_paid:
                     currency_label = existing['currency'] or currency
                     old_amount = existing['amount']
                     event = {
@@ -286,7 +361,10 @@ class Store:
                     events.append(event)
             if events:
                 self.upsert_games(events)
-            # Keep the automatically discovered price pool bounded on small NAS storage.
+            # Clean up historical auto-sampling rows; retain only user watches after migration.
+            self.db.execute('DELETE FROM price_watch WHERE manual=0')
+            self.db.execute('DELETE FROM price_history WHERE appid NOT IN (SELECT appid FROM price_watch)')
+            # Old auto-sampled rows have been removed during migration.
             count = self.db.execute('SELECT COUNT(*) FROM price_watch').fetchone()[0]
             if count > 1500:
                 self.db.execute('''DELETE FROM price_watch WHERE appid IN (
