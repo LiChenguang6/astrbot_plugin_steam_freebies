@@ -59,7 +59,7 @@ async function apiAction(endpoint, body, ok){
 function makeGame(game){
   const card=e('article',undefined,'game');
   const top=e('div',undefined,'game-top');
-  top.append(e('span',game.kind==='steam_candidate'?'Steam 商店折扣候选':'第三方赠 Key / 活动',game.kind==='steam_candidate'?'chip steam':'chip'));
+  top.append(e('span',({steam_candidate:'Steam 商店折扣候选',third_party:'第三方赠 Key / 活动',paid_to_free:'付费转免费候选'}[game.kind]||'未知活动'),game.kind==='third_party'?'chip':'chip steam'));
   top.append(e('span',game.source,'meta')); card.append(top);
   card.append(e('div',game.name,'game-title'),e('div',`原价：${game.original_price||'未知'} · 截止：${game.end_date||'以活动页为准'}`,'meta'));
   card.append(e('p',game.confidence));
@@ -177,19 +177,43 @@ function render(){
   $('push-key').checked=data.settings.push_third_party;
   $('push-result').checked=data.settings.push_claim_results;
   $('autoclaim').checked=data.settings.auto_claim_enabled;
-  showGames(); showClaimHistory(); showTargets(); showASF(); syncAsfProgress();
+  $('price-monitor').checked=data.settings.price_monitor_enabled;
+  $('push-convert').checked=data.settings.push_paid_to_free;
+  $('price-budget').value=String(data.settings.price_checks_per_scan||18);
+  showGames(); showClaimHistory(); showTargets(); showASF(); showPrices(); syncAsfProgress();
 }
 async function reload(){
   if(!bridge)return;
   try{data=await bridge.apiGet('snapshot');render();}
   catch(err){toast('控制台连接失败：'+err.message);}
 }
+function showPrices(){
+  const prices=data?.prices||{total:0,paid:0,free:0,watch:[]};
+  $('itad-status').textContent=data.itad_configured?'ITAD 已配置':'ITAD 未配置（可选）';
+  $('price-status').textContent=`已追踪 ${prices.total} 个 AppID · 最近收费 ${prices.paid} 个 · 当前免费 ${prices.free} 个 · 抽样不能覆盖全部 Steam 游戏`;
+  const rows=(prices.watch||[]).map(item=>{
+    const row=e('div',undefined,'activity-item');
+    const side=e('div');
+    side.append(e('strong',item.name),e('small',`AppID ${item.appid} · ${item.state==='paid'? '收费 '+((item.amount||0)/100).toFixed(2)+' '+(item.currency||'') : item.state==='free'?'当前免费':'尚未采集'} · ${item.manual?'手动关注':'自动发现'}`));
+    const url=e('a','Steam ↗'); url.href=`https://store.steampowered.com/app/${item.appid}/`;url.target='_blank';url.rel='noopener noreferrer';
+    row.append(side,url);return row;
+  });
+  $('watch-list').replaceChildren(...(rows.length?rows:[e('p','暂无价格记录；可手动添加 AppID，然后点击立即扫描。','empty')]));
+}
+$('watch-add').addEventListener('click',async()=>{
+  const id=Number($('watch-appid').value);
+  if(!Number.isSafeInteger(id)||id<1||id>2147483647){toast('请输入有效的 Steam 游戏 AppID');return;}
+  const result=await apiAction('price/watch',{appid:id});
+  if(result)$('watch-appid').value='';
+});
 $('refresh').addEventListener('click',reload);
 $('scan').addEventListener('click',()=>apiAction('scan',{},'已完成一次扫描，请查看最新发现和数据源提示。'));
 $('save').addEventListener('click',()=>apiAction('settings',{
   scan_minutes:Number($('interval').value),push_enabled:$('push').checked,
   push_steam:$('push-steam').checked,push_third_party:$('push-key').checked,
-  push_claim_results:$('push-result').checked,auto_claim_enabled:$('autoclaim').checked
+  push_claim_results:$('push-result').checked,auto_claim_enabled:$('autoclaim').checked,
+  price_monitor_enabled:$('price-monitor').checked,push_paid_to_free:$('push-convert').checked,
+  price_checks_per_scan:Number($('price-budget').value)
 },'推送和扫描设置已保存。'));
 for(const button of document.querySelectorAll('[data-filter]')){
   button.addEventListener('click',()=>{

@@ -15,6 +15,9 @@ DEFAULT_SETTINGS = {
     "push_third_party": True,
     "push_claim_results": True,
     "auto_claim_enabled": False,
+    "price_monitor_enabled": True,
+    "push_paid_to_free": True,
+    "price_checks_per_scan": 18,
 }
 
 
@@ -57,6 +60,19 @@ class Store:
           target_id INTEGER NOT NULL, event_id INTEGER NOT NULL,
           sent_at TEXT NOT NULL, PRIMARY KEY(target_id,event_id)
         );
+        CREATE TABLE IF NOT EXISTS price_watch(
+          appid INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT '',
+          state TEXT NOT NULL DEFAULT 'unknown', amount INTEGER NOT NULL DEFAULT 0,
+          currency TEXT NOT NULL DEFAULT '', first_seen TEXT NOT NULL,
+          last_checked TEXT NOT NULL DEFAULT '', last_paid_at TEXT NOT NULL DEFAULT '',
+          manual INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS price_watch_checked ON price_watch(last_checked);
+        CREATE TABLE IF NOT EXISTS price_history(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          appid INTEGER NOT NULL, seen_at TEXT NOT NULL,
+          state TEXT NOT NULL, amount INTEGER NOT NULL, currency TEXT NOT NULL
+        );
         """)
         self.db.commit()
 
@@ -76,9 +92,12 @@ class Store:
             raise ValueError("存在不支持的设置字段")
         if "scan_minutes" in values and (type(values["scan_minutes"]) is not int or not 30 <= values["scan_minutes"] <= 360):
             raise ValueError("扫描间隔须为 30–360 分钟")
-        for k in ("push_enabled", "push_steam", "push_third_party", "push_claim_results", "auto_claim_enabled"):
+        for k in ("push_enabled", "push_steam", "push_third_party", "push_claim_results", "auto_claim_enabled", "price_monitor_enabled", "push_paid_to_free"):
             if k in values and type(values[k]) is not bool:
                 raise ValueError(f"{k} 必须是布尔值")
+        if 'price_checks_per_scan' in values and (type(values['price_checks_per_scan']) is not int
+           or values['price_checks_per_scan'] not in (12, 18, 24)):
+            raise ValueError('每轮价格查询数仅允许 12、18、24')
         with self.db:
             for k, v in values.items():
                 self.db.execute("INSERT INTO settings(k,v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, json.dumps(v)))
@@ -140,11 +159,11 @@ class Store:
         query = """
          SELECT g.* FROM games g LEFT JOIN sent s ON s.game_key=g.key AND s.target_id=?
          WHERE s.game_key IS NULL AND g.last_seen>=?
-           AND ((g.kind='steam_candidate' AND ?=1) OR (g.kind='third_party' AND ?=1))
+           AND ((g.kind='steam_candidate' AND ?=1) OR (g.kind='third_party' AND ?=1) OR (g.kind='paid_to_free' AND ?=1))
          ORDER BY g.first_seen DESC LIMIT ?"""
         from datetime import timedelta
         since=(datetime.now(timezone.utc)-timedelta(hours=48)).isoformat(timespec='seconds')
-        return [dict(r) for r in self.db.execute(query, (target_id,since,int(opts['push_steam']),int(opts['push_third_party']),max_rows))]
+        return [dict(r) for r in self.db.execute(query, (target_id,since,int(opts['push_steam']),int(opts['push_third_party']),int(opts['push_paid_to_free']),max_rows))]
 
     def marked(self, target_id, key):
         with self.db:
@@ -182,3 +201,97 @@ class Store:
     def get_game(self, key):
         row = self.db.execute("SELECT * FROM games WHERE key=?", (key,)).fetchone()
         return dict(row) if row else None
+
+    def add_price_watch(self, appid):
+        '''Manual watch adds a baseline, never sends a fake historical conversion.'''
+        if type(appid) is not int or not 0 < appid <= 2_147_483_647:
+            raise ValueError('请输入有效的 Steam 游戏 AppID')
+        if self.db.execute('SELECT COUNT(*) FROM price_watch').fetchone()[0] >= 500 and not self.db.execute(
+                'SELECT 1 FROM price_watch WHERE appid=?', (appid,)).fetchone():
+            raise ValueError('监控池已达 500 个游戏上限')
+        now = utcnow()
+        with self.db:
+            self.db.execute('''INSERT INTO price_watch(appid,name,first_seen,manual) VALUES(?,?,?,1)
+                ON CONFLICT(appid) DO UPDATE SET manual=1''', (appid, f'Steam App {appid}', now))
+        return {'appid': appid, 'notice': '已加入价格监控，首次扫描只建立基线，不误报历史转免费'}
+
+    def price_watch_ids(self, limit=9):
+        return [r[0] for r in self.db.execute('''SELECT appid FROM price_watch
+             ORDER BY manual DESC, last_checked ASC, appid ASC LIMIT ?''', (limit,))]
+
+    def price_overview(self):
+        summary = self.db.execute('''SELECT COUNT(*) AS total,
+            SUM(CASE WHEN state='paid' THEN 1 ELSE 0 END) AS paid,
+            SUM(CASE WHEN state='free' THEN 1 ELSE 0 END) AS free
+            FROM price_watch''').fetchone()
+        recent = [dict(x) for x in self.db.execute('''SELECT appid,name,state,amount,currency,
+            first_seen,last_checked,last_paid_at,manual FROM price_watch
+            ORDER BY manual DESC,last_checked DESC LIMIT 30''')]
+        return {'total': summary['total'], 'paid': summary['paid'] or 0,
+                'free': summary['free'] or 0, 'watch': recent}
+
+    def record_price_observations(self, observations):
+        '''A conversion needs a previously observed positive Steam price in the same currency.
+
+        A cold-start free game (even one with an ITAD historical paid price) is not a *new*
+        paid-to-free event. We save only actual state changes to limit SQLite growth.
+        '''
+        now = utcnow()
+        events = []
+        seen = set()
+        with self.db:
+            for item in observations:
+                appid = item.get('appid')
+                state = item.get('state')
+                amount = item.get('amount')
+                currency = str(item.get('currency') or '')[:8]
+                name = str(item.get('name') or '')[:180]
+                if (type(appid) is not int or appid <= 0 or appid in seen or not name
+                    or state not in ('paid', 'free') or type(amount) is not int
+                    or (state == 'paid' and (amount <= 0 or not currency))
+                    or (state == 'free' and amount != 0)):
+                    continue
+                seen.add(appid)
+                existing = self.db.execute('SELECT * FROM price_watch WHERE appid=?', (appid,)).fetchone()
+                if existing is not None and existing['state'] != state:
+                    self.db.execute('''INSERT INTO price_history(appid,seen_at,state,amount,currency)
+                        VALUES(?,?,?,?,?)''', (appid, now, state, amount, currency))
+                elif existing is None:
+                    self.db.execute('''INSERT INTO price_history(appid,seen_at,state,amount,currency)
+                        VALUES(?,?,?,?,?)''', (appid, now, state, amount, currency))
+                last_paid_at = now if state == 'paid' else (existing['last_paid_at'] if existing else '')
+                if existing is None:
+                    self.db.execute('''INSERT INTO price_watch(appid,name,state,amount,currency,
+                        first_seen,last_checked,last_paid_at) VALUES(?,?,?,?,?,?,?,?)''',
+                        (appid,name,state,amount,currency,now,now,last_paid_at))
+                else:
+                    self.db.execute('''UPDATE price_watch SET name=?,state=?,amount=?,
+                        currency=?,last_checked=?,last_paid_at=? WHERE appid=?''',
+                        (name,state,amount,currency,now,last_paid_at,appid))
+                # Date gap protects against very old data being mistaken for a recent change.
+                from datetime import timedelta
+                recently_paid = bool(existing and existing['last_paid_at'] and
+                    existing['last_paid_at'] >= (datetime.now(timezone.utc)-timedelta(days=90)).isoformat(timespec='seconds'))
+                if existing and existing['state'] == 'paid' and existing['amount'] > 0 and state == 'free' and recently_paid:
+                    currency_label = existing['currency'] or currency
+                    old_amount = existing['amount']
+                    event = {
+                        'key': f'price-free:{appid}', 'name': name,
+                        'kind': 'paid_to_free', 'source': 'Steam 商店 / 本地价格观测',
+                        'appid': appid, 'url': f'https://store.steampowered.com/app/{appid}/',
+                        'original_price': f'{old_amount / 100:.2f} {currency_label}',
+                        'end_date': '',
+                        'confidence': '本地记录到之前收费、当前 Steam is_free=true；是否永久免费仍需商店确认',
+                    }
+                    events.append(event)
+            if events:
+                self.upsert_games(events)
+            # Keep the automatically discovered price pool bounded on small NAS storage.
+            count = self.db.execute('SELECT COUNT(*) FROM price_watch').fetchone()[0]
+            if count > 1500:
+                self.db.execute('''DELETE FROM price_watch WHERE appid IN (
+                    SELECT appid FROM price_watch WHERE manual=0
+                    ORDER BY last_checked ASC LIMIT ?)''', (count - 1500,))
+                self.db.execute('''DELETE FROM price_history WHERE appid NOT IN
+                    (SELECT appid FROM price_watch)''')
+        return events

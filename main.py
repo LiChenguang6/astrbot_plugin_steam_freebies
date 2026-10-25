@@ -13,6 +13,7 @@ from .steam_freebies.asf import claim_sub
 from .steam_freebies.manager import ManagedASF
 from .steam_freebies.embedded_ui import EmbeddedUI
 from .steam_freebies.sources import fetch_candidates
+from .steam_freebies.price_monitor import monitor_prices
 from .steam_freebies.store import Store
 
 PLUGIN = "astrbot_plugin_steam_freebies"
@@ -43,6 +44,7 @@ class Main(Star):
             ("POST", "approve"): self.web_approve,
             ("POST", "claim"): self.web_claim,
             ("POST", "test-send"): self.web_test,
+            ("POST", "price/watch"): self.web_price_watch,
             ("POST", "asf/install"): self.web_asf_install,
             ("POST", "asf/start"): self.web_asf_start,
             ("POST", "asf/stop"): self.web_asf_stop,
@@ -86,13 +88,20 @@ class Main(Star):
     async def scan_and_process(self):
         async with self.scan_lock:
             candidates, errors = await fetch_candidates()
+            if self.store.settings()['price_monitor_enabled']:
+                try:
+                    changes, price_errors = await monitor_prices(self.store)
+                    candidates.extend(changes)
+                    errors.extend(price_errors)
+                except Exception as exc:
+                    errors.append(f'价格监控失败：{type(exc).__name__}')
             self.errors = errors
             self.last_scan = datetime.now(timezone.utc).isoformat(timespec="seconds")
             self.last_items = len(candidates)
             if candidates:
                 self.store.upsert_games(candidates)
             # If all providers failed, don't treat that as an empty successful scan.
-            if self.store.settings()['push_enabled'] and candidates:
+            if self.store.settings()['push_enabled']:
                 await self.push_to_groups()
             if self.store.settings()['auto_claim_enabled'] and candidates:
                 await self.process_approved_claims()
@@ -121,8 +130,11 @@ class Main(Star):
             if not target["enabled"]:
                 continue
             for g in self.store.pending_pushes(target["id"], max_rows=10):
-                kind = 'Steam 商店 100% 折扣候选' if g['kind'] == 'steam_candidate' else '第三方 Steam Key / 活动赠送'
+                kind = {'steam_candidate':'Steam 商店 100% 折扣候选',
+                        'paid_to_free':'曾经付费 → 当前免费候选',
+                        'third_party':'第三方 Steam Key / 活动赠送'}.get(g['kind'],'游戏活动')
                 tip = ('Steam 商店活动需核实是否为永久入库。' if g['kind']=='steam_candidate'
+                       else '本地价格记录显示先付费、现免费；请核实是否已转永久免费，此类不自动调用 ASF。' if g['kind']=='paid_to_free'
                        else '第三方活动可能需要注册、积分、地区资格或库存，无法通过 ASF 直接领取 Key。')
                 text = (f"🎁 免费游戏发现｜{kind}\n"
                         f"游戏：{g['name']}\n标价：{g['original_price'] or '未知'}\n"
@@ -202,6 +214,8 @@ class Main(Star):
             "settings": self.store.settings(),
             "targets": targets,
             "games": self.store.games(),
+            "prices": self.store.price_overview(),
+            "itad_configured": bool(os.getenv("ASTR_STEAM_ITAD_API_KEY")),
             "last_scan": self.last_scan,
             "last_items": self.last_items,
             "errors": self.errors[-10:],
@@ -233,6 +247,10 @@ class Main(Star):
     async def web_claim(self):
         body = await request.json(default={})
         return json_response(await self.do_claim(body["key"]))
+
+    async def web_price_watch(self):
+        body = await request.json(default={})
+        return json_response(self.store.add_price_watch(body.get('appid')))
 
     async def web_asf_install(self):
         self.asf_manager.install()

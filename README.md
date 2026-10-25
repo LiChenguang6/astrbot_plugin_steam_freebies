@@ -1,6 +1,6 @@
 # Steam 喜加一监控 · AstrBot 插件
 
-> **v0.4.1（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
+> **v0.5.0（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
 
 独立插件，适用于 AstrBot ≥ 4.29.1 / Python ≥ 3.12；支持 AstrBot 的 OneBot（如 NapCat）与 QQ 官方适配器。借鉴 [原项目](https://github.com/LiChenguang6/astrbot_plugin_steam_status_monitor) 的插件面板架构，**不影响该项目**。
 
@@ -184,3 +184,16 @@ ASF 官方资料：[项目](https://github.com/JustArchiNET/ArchiSteamFarm) · [
 建议操作：插件升级后重载并刷新浏览器；启动 ASF → 创建并保存 Bot 配置 → 启用 Bot → 启动 Bot；若状态显示「未加载」，可停止并重新启动 ASF 再刷新；当 ASF 请求密码或 Steam Guard 时，再提供相应输入并重新启动 Bot。不要把原始 ASF 日志、密码或验证码粘贴到公共对话中。
 
 该修复通过离线模拟测试，不能证明你的 NAS 上 Steam 登录一定成功。
+
+
+## v0.5.0：付费转永久免费候选检测与历史价格
+
+新增 **Steam 当前免费 / 历史收费监控**，在「免费活动 → 付费转免费」分类浏览。**默认监控并推送经过本地先付费、后免费的候选变化**，第三方 Key 和 Steam 100% 折扣监控继续正常运行。此分类不会自动向 ASF 领取许可证。
+
+- **来源：** Steam 商店搜索发现部分近期及免费游戏，使用 `https://store.steampowered.com/api/appdetails?appids=<AppID>&cc=cn&l=schinese` 读取 `is_free` 和当前 `price_overview.final`。不保证接口稳定，也不能扫描全部 Steam 游戏。
+- **判断：** 只有数据库曾在最近 90 天记录该 AppID 处于 `is_free=false` 且 `price_overview.final>0`，后一次读取到 `is_free=true`，才新增「付费转免费候选」通知。首次发现已免费只建基线，不反推历史；`final=0` 但 `is_free=false` 的临时 100% 折扣不作为转免费。即便 `is_free=true` 也不保证永久授权，推送时请复核商店页面。
+- **监控池：** 每轮最多抽查 12/18/24 个 AppID（默认 18）；已有记录优先复查，再从 Steam 搜索补充。可手动添加任意 Steam 游戏 AppID，首次扫描不误报。SQLite 自动建表，保留旧群绑定、领证记录和 ASF 配置。
+- **可选 IsThereAnyDeal：** 从 [IsThereAnyDeal API 文档](https://docs.isthereanydeal.com/)申请 Key，在运行 AstrBot 的容器内设置环境变量 `ASTR_STEAM_ITAD_API_KEY`。检测到本地确切付费→免费变化时，使用 `GET /games/lookup/v1?appid=<AppID>` 和 `GET /games/history/v2?id=<GameID>&country=US&since=...` 检索近两年 Steam 店铺收费历史，最多 2 次候选校验/轮；若 API 不可用，仍按本地价格观测工作。**Key 不返回后台、不写入数据库或 GitHub。**没有历史匹配不代表过去从未收费，历史数据只作证据补充。遵守 ITAD 使用条款，使用者须自行取得授权密钥。
+- **注意：** 这是按抽样监控的候选检测，**不能保证及时发现所有付费转免费游戏**。例如已经在插件安装前转换的老游戏，不会被错误标记为“现在刚转换”。区域价格在中国区和 ITAD 美国区可能不同；价格变化、免费周末与版权许可证变化仍需要人工核实。
+
+更新历史统一见 [CHANGELOG.md](CHANGELOG.md)。
