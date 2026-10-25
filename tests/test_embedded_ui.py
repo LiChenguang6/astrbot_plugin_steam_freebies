@@ -47,7 +47,7 @@ def test_enable_uses_official_endpoint_without_returning_config(tmp_path,monkeyp
     m = manager(tmp_path)
     ui = EmbeddedUI(m)
     sent = {}
-    async def fake_api(method,path,*,body=None):
+    async def fake_api(method,path,*,body=None,operation=None):
         sent.update(method=method,path=path,body=body)
         return {'Success':True, 'Result': {'SteamPassword': 'super_secret'}}
     monkeypatch.setattr(ui,'_api',fake_api)
@@ -62,7 +62,7 @@ def test_enable_uses_official_endpoint_without_returning_config(tmp_path,monkeyp
 def test_bot_control_only_start_stop(tmp_path,monkeypatch):
     ui=EmbeddedUI(manager(tmp_path))
     calls=[]
-    async def fake_api(method,path,*,body=None):
+    async def fake_api(method,path,*,body=None,operation=None):
         calls.append((method,path))
         return {'Success':True}
     monkeypatch.setattr(ui,'_api',fake_api)
@@ -75,12 +75,12 @@ def test_bot_control_only_start_stop(tmp_path,monkeypatch):
 def test_transient_credential_input_never_echoed(tmp_path,monkeypatch):
     ui=EmbeddedUI(manager(tmp_path))
     sent=[]
-    async def fake_api(method,path,*,body=None):
+    async def fake_api(method,path,*,body=None,operation=None):
         sent.append((method,path,body))
         return {'Success':True,'Result': {'SteamPassword': 'do_not_echo'}}
     monkeypatch.setattr(ui,'_api',fake_api)
     result=asyncio.run(ui.input_secret('Password','super_secret'))
-    assert sent==[('POST','/Api/Bot/MyBot/Input',{'Type':'Password','Value':'super_secret'})]
+    assert sent==[('POST','/Api/Bot/MyBot/Input',{'Type':2,'Value':'super_secret'})]
     assert 'super_secret' not in str(result) and 'do_not_echo' not in str(result)
 
 
@@ -88,7 +88,7 @@ def test_status_only_returns_allowlisted_fields(tmp_path,monkeypatch):
     m=manager(tmp_path)
     m.process=type('FakeProcess',(),{'returncode':None})()
     ui=EmbeddedUI(m)
-    async def fake_api(method,path,*,body=None):
+    async def fake_api(method,path,*,body=None,operation=None):
         assert method == 'GET' and path == '/Api/Bot/MyBot'
         return {'Success':True,'Result':{'MyBot':{'IsConnectedAndLoggedOn':True,
              'RequiredInput':'SteamGuard','SteamID':'1234','SteamPassword':'raw-secret',

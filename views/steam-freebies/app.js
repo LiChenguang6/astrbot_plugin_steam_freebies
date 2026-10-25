@@ -275,12 +275,14 @@ async function refreshEmbeddedASF() {
     const enabled=status.enabled?'已启用':'未启用';
     node.textContent=status.message ||
       `Bot：${status.bot_name||'未配置'} · ${status.configured?'配置已创建':'未创建配置'} · ${enabled} · ${status.running?'ASF 运行中':'ASF 未运行'} · ${connected}` +
+      (status.configured&&status.running?` · ${status.loaded?'Bot 已加载':'ASF 尚未加载这个 Bot'}`:'') +
       (status.required_input?` · ASF 要求输入：${status.required_input}`:'') +
       (status.status_note?` · ${status.status_note}`:'');
     $('asf-ui-enable').textContent=status.enabled?'禁用 Bot':'启用 Bot';
     $('asf-ui-enable').dataset.next=status.enabled?'false':'true';
-    for(const id of ['asf-ui-enable','asf-ui-bot-start','asf-ui-bot-stop'])
-      $(id).disabled=!status.running||!status.configured;
+    $('asf-ui-enable').disabled=!status.running||!status.configured;
+    $('asf-ui-bot-start').disabled=!status.running||!status.configured||!status.enabled;
+    $('asf-ui-bot-stop').disabled=!status.running||!status.configured||!status.loaded;
     if(status.required_input && [...$('asf-ui-type').options].some(o=>o.value===status.required_input))
       $('asf-ui-type').value=status.required_input;
     return status;

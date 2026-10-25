@@ -1,6 +1,6 @@
 # Steam 喜加一监控 · AstrBot 插件
 
-> **v0.4.0（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
+> **v0.4.1（功能测试版）** · Steam 商店免费活动 + 第三方 Steam Key 赠送 + QQ 推送 + WebUI 控制台 + 可选插件托管 ASF
 
 独立插件，适用于 AstrBot ≥ 4.29.1 / Python ≥ 3.12；支持 AstrBot 的 OneBot（如 NapCat）与 QQ 官方适配器。借鉴 [原项目](https://github.com/LiChenguang6/astrbot_plugin_steam_status_monitor) 的插件面板架构，**不影响该项目**。
 
@@ -173,3 +173,14 @@ ASF 官方资料：[项目](https://github.com/JustArchiNET/ArchiSteamFarm) · [
 **传输安全**：请尽可能使用 HTTPS 访问 AstrBot。仅通过普通 HTTP 远程打开 `:6185` 时，输入的 Steam 密码或验证码没有 TLS 传输保护。界面因此要求先明确确认当前环境仅为可信网络。不要将 AstrBot 管理后台直接公开到互联网；不要将敏感输入截图或粘贴到聊天中。
 
 首次 Steam 登录及 Guard 确认仍需本人授权，不支持绕过 Steam 安全验证。离线测试无法代替真实 Docker + Steam 联调。
+
+
+## v0.4.1：内置 ASF 管理返回 HTTP 400
+
+旧版本发送身份验证输入时将 `Type` 写成字符串。新版本按 ASF 源码中 `EUserInputType` 的数字枚举值提交，解决某些 ASF 构建的 JSON 反序列化失败问题；不会保存用户密码或 Guard 码。
+
+此外，所有常用操作现在分别显示「状态查询 / 启用 / 启动 / 停止 / 验证输入」及对应 HTTP 状态和安全处理过的提示。`HTTP 400` 并不等于密码错误：新建 Bot 尚未被 ASF 加载、配置有误或验证输入类型不对都可能发生。
+
+建议操作：插件升级后重载并刷新浏览器；启动 ASF → 创建并保存 Bot 配置 → 启用 Bot → 启动 Bot；若状态显示「未加载」，可停止并重新启动 ASF 再刷新；当 ASF 请求密码或 Steam Guard 时，再提供相应输入并重新启动 Bot。不要把原始 ASF 日志、密码或验证码粘贴到公共对话中。
+
+该修复通过离线模拟测试，不能证明你的 NAS 上 Steam 登录一定成功。
