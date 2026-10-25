@@ -169,8 +169,9 @@ function render(){
   $('key-count').textContent=data.games.filter(g=>g.kind==='third_party').length;
   $('groups').textContent=data.targets.filter(x=>x.enabled).length;
   $('last').textContent=data.last_scan?`最近扫描：${new Date(data.last_scan).toLocaleString()}`:'尚未扫描';
-  $('scan-status').textContent=data.last_scan?'扫描已执行':'等待首次扫描';
-  $('scan-status').className=`pill ${data.last_scan?'ok':'neutral'}`;
+  $('scan-status').textContent=data.scan_running?'正在扫描数据源…':data.last_scan?'扫描已完成':'等待首次扫描';
+  $('scan-status').className=`pill ${data.scan_running?'neutral':data.last_scan?'ok':'neutral'}`;
+  $('scan').disabled=Boolean(data.scan_running);
   const errorCount=(data.errors||[]).length;
   $('source-status').textContent=errorCount?`${errorCount} 项数据源/通知异常，请查看下面详情`:'未发现数据源异常';
   $('errors').hidden=!errorCount;
@@ -259,8 +260,8 @@ $('bili-uid-add').addEventListener('click',async()=>{
 });
 // Bilibili login operates entirely inside the restricted AstrBot plugin iframe.
 // Never navigate the parent page, open a popup, expose session cookies, or log SMS codes.
-let qrTimer=null;
-function endQrPolling(){if(qrTimer!==null){clearInterval(qrTimer);qrTimer=null;}}
+let qrTimer=null, qrPrepareTimer=null, qrPreparing=false;
+function endQrPolling(){if(qrTimer!==null){clearInterval(qrTimer);qrTimer=null;}if(qrPrepareTimer!==null){clearInterval(qrPrepareTimer);qrPrepareTimer=null;}qrPreparing=false;}
 function renderBiliQr(matrix){
   if(!Array.isArray(matrix)||matrix.length<21||matrix.length>180||!matrix.every(row=>typeof row==='string' && row.length===matrix.length && /^[01]+$/.test(row)))throw new Error('服务器二维码矩阵格式不正确');
   const n=matrix.length, ns='http://www.w3.org/2000/svg';
@@ -287,20 +288,42 @@ async function checkBiliQr(){
     }
   }catch(err){endQrPolling();$('bili-qr-hint').textContent='查询失败：'+(err?.message||String(err));}
 }
-$('bili-login-start').addEventListener('click',async()=>{
-  const btn=$('bili-login-start');btn.disabled=true;
+async function checkBiliQrPreparation(){
+  if(qrPreparing)return;
+  qrPreparing=true;
   try{
-    const result=await bridge.apiPost('bili/login/start',{});
-    renderBiliQr(result.matrix);
-    $('bili-qr-hint').textContent=result.notice||'手机 B站 App 扫码确认';
-    $('bili-qr-box').hidden=false;endQrPolling();qrTimer=setInterval(checkBiliQr,3500);
+    const result=await bridge.apiGet('bili/login/prepare');
+    if(result.state==='ready'){
+      renderBiliQr(result.matrix);
+      $('bili-qr-hint').textContent=result.notice||'请使用手机 B站 App 扫码确认';
+      $('bili-qr-box').hidden=false;
+      $('bili-qr-check').hidden=false;
+      $('bili-qr-progress').textContent='二维码已生成，请在约 180 秒内扫码';
+      endQrPolling();qrTimer=setInterval(checkBiliQr,3500);
+    }else if(['failed','expired'].includes(result.state)){
+      endQrPolling();
+      $('bili-qr-box').hidden=true;
+      $('bili-qr-progress').textContent='二维码申请失败：'+(result.notice||'未知错误');
+    }else{
+      $('bili-qr-progress').textContent=result.notice||'正在申请二维码…';
+    }
   }catch(err){
     endQrPolling();
-    $('bili-qr-grid').replaceChildren();
-    $('bili-qr-box').hidden=false;
-    $('bili-qr-hint').textContent='二维码无法生成：'+(err?.message||String(err))+'。此时不是扫码问题，请先排查接口错误。';
-    toast('B站二维码生成失败，请查看二维码区域的错误说明');
-  }
+    $('bili-qr-progress').textContent='查询二维码申请状态失败：'+(err?.message||String(err));
+  }finally{qrPreparing=false;}
+}
+$('bili-login-start').addEventListener('click',async()=>{
+  const btn=$('bili-login-start');btn.disabled=true;
+  endQrPolling();$('bili-qr-box').hidden=true;
+  $('bili-qr-check').hidden=true;
+  $('bili-qr-grid').replaceChildren();
+  $('bili-qr-progress').textContent='正在提交 B站二维码申请…';
+  try{
+    const result=await bridge.apiPost('bili/login/start',{});
+    $('bili-qr-progress').textContent=result.notice||'正在准备二维码…';
+    qrPrepareTimer=setInterval(checkBiliQrPreparation,1500);
+    await checkBiliQrPreparation();
+  }catch(err){$('bili-qr-progress').textContent='启动二维码申请失败：'+(err?.message||String(err));}
   finally{btn.disabled=false;}
 });
 $('bili-qr-check').addEventListener('click',checkBiliQr);
@@ -309,7 +332,7 @@ $('bili-mode-qr-tab').addEventListener('click',()=>{
   $('bili-mode-qr-tab').classList.add('selected');$('bili-mode-sms-tab').classList.remove('selected');
 });
 $('bili-mode-sms-tab').addEventListener('click',()=>{
-  $('bili-mode-qr').hidden=true;$('bili-mode-sms').hidden=false;
+  endQrPolling();$('bili-mode-qr').hidden=true;$('bili-mode-sms').hidden=false;
   $('bili-mode-sms-tab').classList.add('selected');$('bili-mode-qr-tab').classList.remove('selected');
 });
 let geetestProof=null;
@@ -387,7 +410,7 @@ $('watch-add').addEventListener('click',async()=>{
   if(result)$('watch-appid').value='';
 });
 $('refresh').addEventListener('click',reload);
-$('scan').addEventListener('click',()=>apiAction('scan',{},'已完成一次扫描，请查看最新发现和数据源提示。'));
+$('scan').addEventListener('click',()=>apiAction('scan',{},'扫描已在后台开始，稍后刷新页面查看结果；无需等待页面请求完成。'));
 $('save').addEventListener('click',()=>apiAction('settings',{
   scan_minutes:Number($('interval').value),push_enabled:$('push').checked,
   push_steam:$('push-steam').checked,push_third_party:$('push-key').checked,

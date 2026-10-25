@@ -2,7 +2,7 @@
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Steam Freebies · AstrBot 控制台</title><link rel="stylesheet" href="./style.css"></head>
 <body><div class="shell">
 <aside class="sidebar"><div class="brand"><div class="brand-mark">S</div><div><strong>STEAM FREEBIES</strong><span>AstrBot 控制台</span></div></div>
-<div class="nav-caption">工作台</div><nav aria-label="主导航"><a href="#dashboard" class="active">◈ <span>监控概览</span></a><a href="#activity">◫ <span>免费活动</span></a><a href="#price-watch">₱ <span>游戏关注</span></a><a href="#bilibili">▷ <span>B站线索</span></a><a href="#claims">✓ <span>领取记录</span></a><a href="#automation">⚙ <span>监控设置</span></a><a href="#asf">⌘ <span>内置 ASF</span></a><a href="#qq">☷ <span>QQ群组</span></a></nav><div class="sidebar-bottom"><span class="glow-dot"></span> ASTROBOT PLUGIN <strong>v0.6.3</strong></div></aside>
+<div class="nav-caption">工作台</div><nav aria-label="主导航"><a href="#dashboard" class="active">◈ <span>监控概览</span></a><a href="#activity">◫ <span>免费活动</span></a><a href="#price-watch">₱ <span>游戏关注</span></a><a href="#bilibili">▷ <span>B站线索</span></a><a href="#claims">✓ <span>领取记录</span></a><a href="#automation">⚙ <span>监控设置</span></a><a href="#asf">⌘ <span>内置 ASF</span></a><a href="#qq">☷ <span>QQ群组</span></a></nav><div class="sidebar-bottom"><span class="glow-dot"></span> ASTROBOT PLUGIN <strong>v0.6.4</strong></div></aside>
 <main class="workspace">
 <header class="topbar"><div class="crumb">STEAM FREEBIES <span>/</span> <b>监控控制台</b></div><div class="top-actions"><span id="clock" class="clock"></span><button id="refresh" class="btn ghost">↻ 刷新</button><button id="scan" class="btn primary">◈ 立即扫描</button></div></header>
 <section id="dashboard" class="hero"><div><span class="eyebrow">YOUR GIVEAWAY COMMAND CENTER</span><h1>限免与价格变化，不再错过。</h1><p>统一监控 Steam 商店促销及第三方 Steam Key 活动，自动向 QQ 群播报，并追踪 ASF 领取结果。</p><div class="hero-foot"><span id="scan-status" class="pill neutral">等待首次扫描</span><span id="source-status" class="small-note">数据状态尚未加载</span></div></div><div class="hero-art" aria-hidden="true"><div class="orbit one"></div><div class="orbit two"></div><div class="big-gift">✧</div></div></section>
@@ -37,7 +37,7 @@
 <div class="bili-action-row"><span class="pill neutral" id="bili-login-status">未登录</span><button class="btn ghost" id="bili-login-logout" type="button">清除本地登录</button></div>
 <div class="bili-login-tabs" role="group" aria-label="选择 B站登录方式"><button type="button" id="bili-mode-qr-tab" class="selected">手机扫码登录</button><button type="button" id="bili-mode-sms-tab">短信验证码登录</button></div>
 <div id="bili-mode-qr" class="bili-login-mode"><p class="subtitle">推荐：直接在面板中显示二维码，使用另一台设备或手机 B站 App 扫描，不会发生网页跳转。</p>
-<button class="btn primary" id="bili-login-start" type="button">生成 B站登录二维码</button>
+<button class="btn primary" id="bili-login-start" type="button">生成 B站登录二维码</button><p class="hint" id="bili-qr-progress" role="status" aria-live="polite">点击按钮申请官方登录二维码</p>
 <div class="bili-qr-block" id="bili-qr-box" hidden><div id="bili-qr-grid" class="bili-qr-grid" role="img" aria-label="哔哩哔哩官方登录二维码"></div><div><strong>使用手机 B站 App 扫描并确认</strong><p class="subtitle" id="bili-qr-hint">二维码有效期约 180 秒</p><button class="btn ghost" id="bili-qr-check" type="button">↻ 检查扫码结果</button></div></div></div>
 <div id="bili-mode-sms" class="bili-login-mode" hidden>
 <p class="subtitle">B站短信登录需要先完成人机验证（极验），无法跳过。极验由官方组件处理；如果组件被浏览器阻止，请使用上方扫码方式。</p>

@@ -44,6 +44,7 @@ class Main(Star):
         self.errors = []
         self.last_scan = ""
         self.last_items = 0
+        self.manual_scan_task = None
 
     async def initialize(self):
         api = {
@@ -58,6 +59,7 @@ class Main(Star):
             ("POST", "bili/add"): self.web_bili_add,
             ("POST", "bili/remove"): self.web_bili_remove,
             ("POST", "bili/login/start"): self.web_bili_login_start,
+            ("GET", "bili/login/prepare"): self.web_bili_login_prepare,
             ("POST", "bili/login/poll"): self.web_bili_login_poll,
             ("POST", "bili/logout"): self.web_bili_logout,
             ("POST", "bili/sms/captcha"): self.web_bili_sms_captcha,
@@ -270,6 +272,7 @@ class Main(Star):
             "itad_configured": bool(os.getenv("ASTR_STEAM_ITAD_API_KEY")),
             "last_scan": self.last_scan,
             "last_items": self.last_items,
+            "scan_running": self.scan_lock.locked() or bool(self.manual_scan_task and not self.manual_scan_task.done()),
             "errors": self.errors[-10:],
             "claim_configured": bool(os.getenv('ASTR_STEAM_ASF_BOT')) or bool(self.asf_manager.settings()['bot_name']),
             "asf": self.asf_manager.status(),
@@ -285,9 +288,21 @@ class Main(Star):
         return json_response({"settings": self.store.update_settings(body)})
 
     async def web_scan(self):
-        if self.scan_lock.locked():
-            raise ValueError("正在扫描，请稍后刷新")
-        return json_response(await self.scan_and_process())
+        # A synchronous multi-source scan can outlive AstrBot's HTTP gateway deadline.
+        # Queue the work and return immediately; clients poll /snapshot for completion.
+        if self.scan_lock.locked() or (self.manual_scan_task is not None and not self.manual_scan_task.done()):
+            raise ValueError("正在扫描，请等待当前任务完成")
+        self.manual_scan_task = asyncio.create_task(self._manual_scan(), name='steam-freebies-manual-scan')
+        return json_response({'ok': True, 'notice': '扫描已开始，将在后台继续；请稍后刷新查看结果'})
+
+    async def _manual_scan(self):
+        try:
+            await self.scan_and_process()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.errors = [f'手动扫描失败：{type(exc).__name__}']
+            logger.warning('[Steam喜加一] 手动扫描失败：%s', type(exc).__name__)
 
     async def web_approve(self):
         body = await request.json(default={})
@@ -330,7 +345,10 @@ class Main(Star):
         return json_response(self.store.remove_bili_creator(body.get('mid')))
 
     async def web_bili_login_start(self):
-        return json_response(await self.bili_auth.qr_start())
+        return json_response(self.bili_auth.qr_begin())
+
+    async def web_bili_login_prepare(self):
+        return json_response(self.bili_auth.qr_prepare_status())
 
     async def web_bili_login_poll(self):
         return json_response(await self.bili_auth.qr_poll())
@@ -452,6 +470,14 @@ class Main(Star):
         yield event.plain_result("\n".join(lines))
 
     async def terminate(self):
+        if self.manual_scan_task and not self.manual_scan_task.done():
+            self.manual_scan_task.cancel()
+            try:
+                await self.manual_scan_task
+            except asyncio.CancelledError:
+                pass
+        # Do not leave an in-flight login preparation HTTP request on plugin unload.
+        self.bili_auth.cancel_qr_preparation()
         if self.task:
             self.task.cancel()
             try:

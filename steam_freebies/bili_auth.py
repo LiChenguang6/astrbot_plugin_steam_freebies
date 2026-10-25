@@ -4,13 +4,14 @@ A browser completes the real GeeTest challenge; the plugin never computes or
 bypasses it. QR/session keys and SMS tokens stay in server memory. Cookies are
 stored in the AstrBot private data directory, never echoed in a WebUI response.
 """
+import asyncio
 import base64
 import json
 import os
 import re
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlencode, parse_qs
 
 import aiohttp
 
@@ -32,6 +33,22 @@ def is_official_scan_url(value):
     return url.scheme == 'https' and url.hostname == 'passport.bilibili.com' and not url.username and not url.password
 
 
+def _safe_scan_url(url, key):
+    """Use Bilibili's supplied official URL if it matches key, else canonical URL.
+
+    Never send users to arbitrary hosts and never expose a QR login key in diagnostics.
+    The key comes from an authenticated, code=0 Bilibili response.
+    """
+    canonical = PASSPORT + '/h5-app/passport/login/scan?' + urlencode({'navhide': '1', 'qrcode_key': key})
+    if not is_official_scan_url(url):
+        return canonical
+    parts = urlsplit(url)
+    if parts.path != '/h5-app/passport/login/scan':
+        return canonical
+    embedded = parse_qs(parts.query).get('qrcode_key', [])
+    return url if embedded == [key] else canonical
+
+
 def _api_data(payload, operation):
     if not isinstance(payload, dict):
         raise ValueError(f'B站{operation}返回数据无效')
@@ -49,6 +66,10 @@ class BiliAuth:
         self._qr_key = ''
         self._qr_started = 0
         self._qr_last_poll = 0
+        self._qr_prepare_task = None
+        self._qr_prepared_data = None
+        self._qr_prepare_error = ''
+        self._qr_generation = 0
         self._captcha = None
         self._sms = None
         self._sms_last_sent = 0
@@ -106,16 +127,66 @@ class BiliAuth:
             raise ValueError(f'B站二维码接口连接失败（{type(exc).__name__}）；请检查 NAS 到 passport.bilibili.com 的网络') from None
         info = _api_data(body, '二维码初始化')
         url, key = info.get('url'), info.get('qrcode_key')
-        if not is_official_scan_url(url) or not isinstance(key, str) or not QRCODE_RE.fullmatch(key):
-            raise ValueError('B站没有返回有效的官方登录二维码')
-        self._qr_key, self._qr_started, self._qr_last_poll = key, time.monotonic(), 0
+        if not isinstance(key, str) or not QRCODE_RE.fullmatch(key):
+            url_present = isinstance(url, str) and bool(url)
+            key_present = isinstance(key, str) and bool(key)
+            raise ValueError('B站二维码接口成功，但未发放有效扫码密钥'
+                             f'（URL：{"有" if url_present else "无"}，密钥：{"有但格式异常" if key_present else "无"}）。'
+                             '请检查 NAS 的 B站访问环境，无法通过本地生成二维码解决')
+        url = _safe_scan_url(url, key)
         qr = QRCode(border=4, box_size=6, error_correction=constants.ERROR_CORRECT_M)
         qr.add_data(url)
         qr.make(fit=True)
         # Render as native DOM/SVG in the iframe: avoids blocked data: images, popups and navigation.
         matrix = [''.join('1' if bit else '0' for bit in row) for row in qr.get_matrix()]
+        self._qr_key, self._qr_started, self._qr_last_poll = key, time.monotonic(), 0
         return {'ok': True, 'matrix': matrix, 'expires_seconds': 180,
                 'notice': '手机 B站 App 扫描下方二维码并确认。页面不需要跳转；180 秒内有效。'}
+
+    def qr_begin(self):
+        """Return instantly to AstrBot's WebUI; remote Bilibili may stall or time out.
+
+        The actual HTTPS call executes as an asyncio task; polling never waits on it.
+        """
+        import asyncio
+        task = self._qr_prepare_task
+        if task is not None and not task.done():
+            return {'state': 'preparing', 'notice': 'B站二维码仍在申请中，请稍后查看'}
+        self._qr_generation += 1
+        generation = self._qr_generation
+        self._qr_key = ''
+        self._qr_prepared_data = None
+        self._qr_prepare_error = ''
+        self._qr_prepare_task = asyncio.create_task(self._qr_prepare(generation), name='bili-qr-prepare')
+        return {'state': 'preparing', 'notice': '已提交申请；页面将自动显示二维码或接口错误'}
+
+    async def _qr_prepare(self, generation):
+        try:
+            result = await self.qr_start()
+        except asyncio.CancelledError:
+            return
+        except ValueError as exc:
+            if generation == self._qr_generation:
+                self._qr_prepare_error = str(exc)[:240]
+            return
+        except Exception as exc:
+            if generation == self._qr_generation:
+                self._qr_prepare_error = f'二维码初始化失败（{type(exc).__name__}）；检查 AstrBot 容器日志'
+            return
+        if generation == self._qr_generation:
+            self._qr_prepared_data = result
+
+    def qr_prepare_status(self):
+        if self._qr_prepared_data:
+            if time.monotonic() - self._qr_started >= 180:
+                self._qr_prepared_data = None
+                return {'state': 'expired', 'notice': '二维码准备完成但已过期，请重新生成'}
+            return {'state': 'ready', **self._qr_prepared_data}
+        if self._qr_prepare_error:
+            return {'state': 'failed', 'notice': self._qr_prepare_error}
+        if self._qr_prepare_task is not None and not self._qr_prepare_task.done():
+            return {'state': 'preparing', 'notice': '正在连接 B站二维码服务…'}
+        return {'state': 'idle', 'notice': '请点击生成 B站登录二维码'}
 
     async def qr_poll(self):
         if not self._qr_key or time.monotonic() - self._qr_started > 180:
@@ -220,8 +291,17 @@ class BiliAuth:
         self._sms = None
         return {'ok': True, 'notice': 'B站短信验证码登录成功，私有会话已保存'}
 
-    def logout(self):
+    def cancel_qr_preparation(self):
+        self._qr_generation += 1
+        if self._qr_prepare_task is not None and not self._qr_prepare_task.done():
+            self._qr_prepare_task.cancel()
+        self._qr_prepare_task = None
+        self._qr_prepared_data = None
+        self._qr_prepare_error = ''
         self._qr_key = ''
+
+    def logout(self):
+        self.cancel_qr_preparation()
         self._captcha = None
         self._sms = None
         try:
